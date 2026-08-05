@@ -29,12 +29,12 @@ db.connect((err) => {
     console.log('¡Conectado exitosamente a la base de datos MySQL!');
 });
 
-// Ruta de prueba
+// Ruta raíz de prueba
 app.get('/', (req, res) => {
     res.send('API Backend La Escondida corriendo correctamente');
 });
 
-// Ruta para obtener la lista de productos
+// 1. OBTENER PRODUCTOS DISPONIBLES
 app.get('/api/productos', (req, res) => {
     const sql = 'SELECT * FROM productos WHERE disponible = 1';
     db.query(sql, (err, results) => {
@@ -46,7 +46,63 @@ app.get('/api/productos', (req, res) => {
     });
 });
 
-// Asignación de puerto dinámico para Render (o 3000 localmente)
+// 2. CREAR UNA NUEVA ORDEN (COMANDA)
+app.post('/api/ordenes', (req, res) => {
+    const { numero_mesa, total, detalles } = req.body;
+
+    // Insertar encabezado de la orden
+    const sqlOrden = 'INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, "Pendiente")';
+    db.query(sqlOrden, [numero_mesa, total], (err, result) => {
+        if (err) {
+            console.error('Error al crear la orden:', err);
+            return res.status(500).json({ error: 'Error al registrar la orden' });
+        }
+
+        const id_orden = result.insertId;
+
+        // Formatear detalles para inserción masiva
+        const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario) VALUES ?';
+        const valoresDetalles = detalles.map(item => [id_orden, item.id_producto, item.cantidad, item.precio]);
+
+        db.query(sqlDetalles, [valoresDetalles], (errDetalles) => {
+            if (errDetalles) {
+                console.error('Error al insertar detalles:', errDetalles);
+                return res.status(500).json({ error: 'Error al registrar el detalle de la orden' });
+            }
+
+            res.json({ mensaje: 'Orden creada con éxito', id_orden });
+        });
+    });
+});
+
+// 3. CONSULTAR ÓRDENES ACTIVAS (Para cocina/caja)
+app.get('/api/ordenes', (req, res) => {
+    const sql = 'SELECT * FROM ordenes WHERE estado != "Pagada" ORDER BY fecha_creacion DESC';
+    db.query(sql, (err, results) => {
+        if (err) {
+            console.error('Error SQL:', err);
+            return res.status(500).json({ error: 'Error al obtener las órdenes' });
+        }
+        res.json(results);
+    });
+});
+
+// 4. ACTUALIZAR ESTADO DE LA ORDEN (Ej: Cambiar a 'Pagada' y descontar inventario)
+app.put('/api/ordenes/:id', (req, res) => {
+    const { id } = req.params;
+    const { estado } = req.body; // 'Lista', 'Pagada', etc.
+
+    const sql = 'UPDATE ordenes SET estado = ? WHERE id_orden = ?';
+    db.query(sql, [estado, id], (err, result) => {
+        if (err) {
+            console.error('Error al actualizar estado:', err);
+            return res.status(500).json({ error: 'Error al actualizar la orden' });
+        }
+        res.json({ mensaje: `Orden ${id} actualizada a ${estado}` });
+    });
+});
+
+// Puerto dinámico para Render
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {

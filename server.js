@@ -163,6 +163,23 @@ app.put('/api/ordenes/:id/lista', (req, res) => {
     });
 });
 
+// 11. OBTENER ÓRDENES PARA LA CAJA (Listas para cobrar)
+app.get('/api/caja', (req, res) => {
+    db.query("SELECT * FROM ordenes WHERE estado = 'Lista' ORDER BY id_orden ASC", (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+// 12. COBRAR ORDEN (Cambiar a 'Pagada')
+app.put('/api/ordenes/:id/pagar', (req, res) => {
+    const { id } = req.params;
+    db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: `Orden ${id} cobrada exitosamente` });
+    });
+});
+
 // Puerto dinámico para Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

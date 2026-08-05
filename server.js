@@ -74,7 +74,7 @@ app.get('/api/ordenes', (req, res) => {
     });
 });
 
-// 6. CREAR NUEVA ÓRDEN (CORREGIDO 'Pendiente' CON COMILLAS SIMPLES)
+// 6. CREAR NUEVA ÓRDEN (COMANDA)
 app.post('/api/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
     const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
@@ -84,7 +84,6 @@ app.post('/api/ordenes', (req, res) => {
         return res.status(400).json({ error: 'El carrito está vacío' });
     }
 
-    // Corrección aquí: 'Pendiente' entre comillas simples dentro de la consulta SQL
     const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
     
     db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
@@ -133,6 +132,34 @@ app.get('/api/ordenes/:id/detalles', (req, res) => {
     db.query('SELECT * FROM detalles_orden WHERE id_orden = ?', [id], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
+    });
+});
+
+// 9. OBTENER ÓRDENES PARA EL MONITOR DE COCINA
+app.get('/api/cocina', (req, res) => {
+    const sql = `
+        SELECT o.id_orden, o.numero_mesa, p.nombre, d.cantidad 
+        FROM ordenes o
+        JOIN detalles_orden d ON o.id_orden = d.id_orden
+        JOIN productos p ON d.id_producto = p.id_producto
+        WHERE o.estado = 'Pendiente'
+        ORDER BY o.id_orden ASC
+    `;
+    db.query(sql, (err, results) => {
+        if (err) {
+            console.error('Error al consultar cocina:', err);
+            return res.status(500).json({ error: err.message });
+        }
+        res.json(results);
+    });
+});
+
+// 10. MARCAR ORDEN COMO 'LISTA' DESDE COCINA
+app.put('/api/ordenes/:id/lista', (req, res) => {
+    const { id } = req.params;
+    db.query("UPDATE ordenes SET estado = 'Lista' WHERE id_orden = ?", [id], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: `Orden ${id} marcada como Lista` });
     });
 });
 

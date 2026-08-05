@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Cambio importante: pool de conexiones para evitar desconexiones por inactividad
+// Pool de conexiones para evitar desconexiones por inactividad
 const db = mysql.createPool({
     host: 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
     port: 28686,
@@ -137,9 +137,9 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
     db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         
-        // Uso de cantidad_requerida para coincidir con la DB
+        // CORREGIDO: Vuelve a usar cantidad_necesaria
         const sqlConsulta = `
-            SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) as total_gastado
+            SELECT r.id_insumo, SUM(r.cantidad_necesaria * d.cantidad) as total_gastado
             FROM detalles_orden d
             JOIN recetas r ON d.id_producto = r.id_producto
             WHERE d.id_orden = ?
@@ -206,9 +206,9 @@ app.put('/api/insumos/:id/stock', (req, res) => {
 });
 
 app.get('/api/recetas', (req, res) => {
-    // Uso de cantidad_requerida para coincidir con la DB
+    // CORREGIDO: Vuelve a usar cantidad_necesaria
     const sql = `
-        SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida 
+        SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_necesaria 
         FROM recetas r
         JOIN productos p ON r.id_producto = p.id_producto
         JOIN insumos i ON r.id_insumo = i.id_insumo
@@ -223,7 +223,7 @@ app.get('/api/recetas', (req, res) => {
 app.get('/api/recetas/:id_producto', (req, res) => {
     const { id_producto } = req.params;
     const sql = `
-        SELECT r.id_producto, r.id_insumo, r.cantidad_requerida, i.nombre as nombre_insumo 
+        SELECT r.id_producto, r.id_insumo, r.cantidad_necesaria, i.nombre as nombre_insumo 
         FROM recetas r
         JOIN insumos i ON r.id_insumo = i.id_insumo
         WHERE r.id_producto = ?
@@ -235,9 +235,9 @@ app.get('/api/recetas/:id_producto', (req, res) => {
 });
 
 app.post('/api/recetas', (req, res) => {
-    const { id_producto, id_insumo, cantidad_requerida } = req.body;
-    db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?)', 
-    [id_producto, id_insumo, cantidad_requerida], (err) => {
+    const { id_producto, id_insumo, cantidad_necesaria } = req.body;
+    db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_necesaria) VALUES (?, ?, ?)', 
+    [id_producto, id_insumo, cantidad_necesaria], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });

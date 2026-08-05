@@ -171,12 +171,31 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// 12. COBRAR ORDEN (Cambiar a 'Pagada')
+// 12. COBRAR ORDEN Y DESCONTAR INVENTARIO
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
-    db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (err, result) => {
+    
+    // Cambiar estado a Pagada
+    db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: `Orden ${id} cobrada exitosamente` });
+        
+        // Descontar ingredientes basados en las recetas del pedido
+        const sqlDescuento = `
+            UPDATE insumos i
+            JOIN (
+                SELECT r.id_insumo, SUM(r.cantidad_necesaria * d.cantidad) as total_gastado
+                FROM detalles_orden d
+                JOIN recetas r ON d.id_producto = r.id_producto
+                WHERE d.id_orden = ?
+                GROUP BY r.id_insumo
+            ) as consumo ON i.id_insumo = consumo.id_insumo
+            SET i.cantidad_actual = i.cantidad_actual - consumo.total_gastado
+        `;
+        
+        db.query(sqlDescuento, [id], (errDesc) => {
+            if (errDesc) console.error("Error descontando inventario:", errDesc);
+            res.json({ mensaje: `Orden ${id} cobrada y stock actualizado` });
+        });
     });
 });
 
@@ -195,6 +214,37 @@ app.get('/api/reportes/ventas', (req, res) => {
             return res.status(500).json({ error: err.message });
         }
         res.json(results[0]);
+    });
+});
+
+// 14. AGREGAR PRODUCTO NUEVO (PANEL ADMIN)
+app.post('/api/productos', (req, res) => {
+    const { nombre, precio } = req.body;
+    db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Producto agregado exitosamente' });
+    });
+});
+
+// 15. AGREGAR INSUMO NUEVO DESDE CERO (PANEL ADMIN)
+app.post('/api/insumos', (req, res) => {
+    const { nombre, cantidad_actual } = req.body;
+    db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Insumo agregado exitosamente' });
+    });
+});
+
+// 16. SUMAR STOCK A UN INSUMO EXISTENTE (PANEL ADMIN)
+app.put('/api/insumos/:id/stock', (req, res) => {
+    const { id } = req.params;
+    const { cantidad_agregar } = req.body;
+    
+    db.query('UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?', 
+    [parseFloat(cantidad_agregar), id], 
+    (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Stock actualizado con éxito' });
     });
 });
 

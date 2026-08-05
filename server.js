@@ -27,14 +27,23 @@ db.connect((err) => {
         return;
     }
     console.log('¡Conectado exitosamente a la base de datos MySQL!');
+
+    // Aseguramos que exista la columna notas
+    db.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", (errAlter) => {
+        if (!errAlter) {
+            console.log('Columna "notas" verificada/agregada a detalles_orden.');
+        }
+    });
 });
 
-// Ruta raíz de prueba
 app.get('/', (req, res) => {
-    res.send('API Backend La Escondida corriendo correctamente');
+    res.send('API Backend La Escondida corriendo correctamente - VERSIÓN COMPLETA');
 });
 
-// 1. OBTENER CATEGORÍAS
+// ==========================================
+// RUTAS DEL MENÚ DIGITAL Y CLIENTES
+// ==========================================
+
 app.get('/api/categorias', (req, res) => {
     db.query('SELECT * FROM categorias', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -42,7 +51,6 @@ app.get('/api/categorias', (req, res) => {
     });
 });
 
-// 2. OBTENER PRODUCTOS DISPONIBLES
 app.get('/api/productos', (req, res) => {
     db.query('SELECT * FROM productos WHERE disponible = 1', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -50,31 +58,10 @@ app.get('/api/productos', (req, res) => {
     });
 });
 
-// 3. OBTENER INSUMOS (INVENTARIO)
-app.get('/api/insumos', (req, res) => {
-    db.query('SELECT * FROM insumos', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
+// ==========================================
+// RUTAS DE PEDIDOS, COCINA Y CAJA
+// ==========================================
 
-// 4. OBTENER RECETAS
-app.get('/api/recetas', (req, res) => {
-    db.query('SELECT * FROM recetas', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-// 5. OBTENER ÓRDENES
-app.get('/api/ordenes', (req, res) => {
-    db.query('SELECT * FROM ordenes ORDER BY fecha_creacion DESC', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-// 6. CREAR NUEVA ÓRDEN (COMANDA)
 app.post('/api/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
     const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
@@ -87,10 +74,7 @@ app.post('/api/ordenes', (req, res) => {
     const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
     
     db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
-        if (err) {
-            console.error('Error orden MySQL:', err);
-            return res.status(500).json({ error: err.message });
-        }
+        if (err) return res.status(500).json({ error: err.message });
 
         const id_orden = result.insertId;
 
@@ -98,47 +82,23 @@ app.post('/api/ordenes', (req, res) => {
             const prodId = parseInt(item.id_producto || item.id || item.producto_id);
             const cant = parseInt(item.cantidad || item.cant || 1);
             const precio = parseFloat(item.precio || item.precio_unitario || item.precioUnitario || 0);
+            const notas = item.nombre || null; 
 
-            return [id_orden, isNaN(prodId) ? 1 : prodId, cant, precio];
+            return [id_orden, isNaN(prodId) ? 1 : prodId, cant, precio, notas];
         });
 
-        const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario) VALUES ?';
+        const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
 
         db.query(sqlDetalles, [valoresDetalles], (errDetalles) => {
-            if (errDetalles) {
-                console.error('Error detalles MySQL:', errDetalles);
-                return res.status(500).json({ error: errDetalles.message });
-            }
-
+            if (errDetalles) return res.status(500).json({ error: errDetalles.message });
             res.json({ mensaje: '¡Orden creada con éxito!', id_orden });
         });
     });
 });
 
-// 7. ACTUALIZAR ESTADO DE UNA ÓRDEN
-app.put('/api/ordenes/:id', (req, res) => {
-    const { id } = req.params;
-    const { estado } = req.body;
-    
-    db.query('UPDATE ordenes SET estado = ? WHERE id_orden = ?', [estado, id], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: `Orden ${id} actualizada a ${estado}` });
-    });
-});
-
-// 8. OBTENER DETALLES DE UNA ÓRDEN ESPECÍFICA
-app.get('/api/ordenes/:id/detalles', (req, res) => {
-    const { id } = req.params;
-    db.query('SELECT * FROM detalles_orden WHERE id_orden = ?', [id], (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-// 9. OBTENER ÓRDENES PARA EL MONITOR DE COCINA
 app.get('/api/cocina', (req, res) => {
     const sql = `
-        SELECT o.id_orden, o.numero_mesa, p.nombre, d.cantidad 
+        SELECT o.id_orden, o.numero_mesa, IFNULL(d.notas, p.nombre) AS nombre, d.cantidad 
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
         JOIN productos p ON d.id_producto = p.id_producto
@@ -146,24 +106,19 @@ app.get('/api/cocina', (req, res) => {
         ORDER BY o.id_orden ASC
     `;
     db.query(sql, (err, results) => {
-        if (err) {
-            console.error('Error al consultar cocina:', err);
-            return res.status(500).json({ error: err.message });
-        }
+        if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
 });
 
-// 10. MARCAR ORDEN COMO 'LISTA' DESDE COCINA
 app.put('/api/ordenes/:id/lista', (req, res) => {
     const { id } = req.params;
-    db.query("UPDATE ordenes SET estado = 'Lista' WHERE id_orden = ?", [id], (err, result) => {
+    db.query("UPDATE ordenes SET estado = 'Lista' WHERE id_orden = ?", [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: `Orden ${id} marcada como Lista` });
     });
 });
 
-// 11. OBTENER ÓRDENES PARA LA CAJA (Listas para cobrar)
 app.get('/api/caja', (req, res) => {
     db.query("SELECT * FROM ordenes WHERE estado = 'Lista' ORDER BY id_orden ASC", (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -171,15 +126,12 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// 12. COBRAR ORDEN Y DESCONTAR INVENTARIO
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
-    
-    // Cambiar estado a Pagada
     db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         
-        // Descontar ingredientes basados en las recetas del pedido
+        // Descontar ingredientes basados en las recetas
         const sqlDescuento = `
             UPDATE insumos i
             JOIN (
@@ -199,7 +151,10 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
     });
 });
 
-// 13. REPORTE DE VENTAS DEL DÍA
+// ==========================================
+// RUTAS DE ADMINISTRACIÓN (PANEL ADMIN)
+// ==========================================
+
 app.get('/api/reportes/ventas', (req, res) => {
     const sql = `
         SELECT 
@@ -209,15 +164,12 @@ app.get('/api/reportes/ventas', (req, res) => {
         WHERE estado = 'Pagada'
     `;
     db.query(sql, (err, results) => {
-        if (err) {
-            console.error('Error al generar reporte:', err);
-            return res.status(500).json({ error: err.message });
-        }
+        if (err) return res.status(500).json({ error: err.message });
         res.json(results[0]);
     });
 });
 
-// 14. AGREGAR PRODUCTO NUEVO (PANEL ADMIN)
+// PRODUCTOS
 app.post('/api/productos', (req, res) => {
     const { nombre, precio } = req.body;
     db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
@@ -226,7 +178,22 @@ app.post('/api/productos', (req, res) => {
     });
 });
 
-// 15. AGREGAR INSUMO NUEVO DESDE CERO (PANEL ADMIN)
+app.delete('/api/productos/:id', (req, res) => {
+    const { id } = req.params;
+    db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Producto eliminado del menú exitosamente' });
+    });
+});
+
+// INSUMOS (INVENTARIO)
+app.get('/api/insumos', (req, res) => {
+    db.query('SELECT * FROM insumos', (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
 app.post('/api/insumos', (req, res) => {
     const { nombre, cantidad_actual } = req.body;
     db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
@@ -235,16 +202,45 @@ app.post('/api/insumos', (req, res) => {
     });
 });
 
-// 16. SUMAR STOCK A UN INSUMO EXISTENTE (PANEL ADMIN)
 app.put('/api/insumos/:id/stock', (req, res) => {
     const { id } = req.params;
     const { cantidad_agregar } = req.body;
-    
     db.query('UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?', 
-    [parseFloat(cantidad_agregar), id], 
-    (err) => {
+    [parseFloat(cantidad_agregar), id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Stock actualizado con éxito' });
+    });
+});
+
+// RECETAS
+app.get('/api/recetas/:id_producto', (req, res) => {
+    const { id_producto } = req.params;
+    const sql = `
+        SELECT r.id_producto, r.id_insumo, r.cantidad_necesaria, i.nombre as nombre_insumo 
+        FROM recetas r
+        JOIN insumos i ON r.id_insumo = i.id_insumo
+        WHERE r.id_producto = ?
+    `;
+    db.query(sql, [id_producto], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+app.post('/api/recetas', (req, res) => {
+    const { id_producto, id_insumo, cantidad_necesaria } = req.body;
+    db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_necesaria) VALUES (?, ?, ?)', 
+    [id_producto, id_insumo, cantidad_necesaria], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ingrediente agregado a la receta' });
+    });
+});
+
+app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
+    const { id_producto, id_insumo } = req.params;
+    db.query('DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?', [id_producto, id_insumo], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ingrediente removido de la receta' });
     });
 });
 

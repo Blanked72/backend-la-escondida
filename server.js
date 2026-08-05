@@ -74,20 +74,24 @@ app.get('/api/ordenes', (req, res) => {
     });
 });
 
-// 6. CREAR NUEVA ÓRDEN (COMANDA MEJORADA)
+// 6. CREAR NUEVA ÓRDEN (COMANDA ULTRA FLEXIBLE)
 app.post('/api/ordenes', (req, res) => {
-    const { numero_mesa, mesa, total, detalles } = req.body;
-    
-    // Soporta 'numero_mesa' o 'mesa'
-    const mesaFinal = numero_mesa || mesa;
+    console.log("Datos recibidos en el backend:", req.body);
 
-    if (!mesaFinal || !detalles || detalles.length === 0) {
-        return res.status(400).json({ error: 'Faltan datos requeridos (mesa o detalles)' });
+    // Captura cualquier variante de nombre para el número de mesa
+    const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
+    
+    // Captura cualquier variante de nombre para el arreglo de productos
+    const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
+    const totalFinal = req.body.total || 0;
+
+    if (!Array.isArray(detallesEnviados) || detallesEnviados.length === 0) {
+        return res.status(400).json({ error: 'El carrito está vacío o no se enviaron productos.' });
     }
 
     const sqlOrden = 'INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, "Pendiente")';
     
-    db.query(sqlOrden, [mesaFinal, total], (err, result) => {
+    db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
         if (err) {
             console.error('Error al crear orden en MySQL:', err);
             return res.status(500).json({ error: err.message });
@@ -95,12 +99,12 @@ app.post('/api/ordenes', (req, res) => {
 
         const id_orden = result.insertId;
 
-        // Soporta 'id_producto' o 'id', y 'precio' o 'precio_unitario'
-        const valoresDetalles = detalles.map(item => [
+        // Mapea cada producto adaptándose a cualquier propiedad enviada desde el HTML
+        const valoresDetalles = detallesEnviados.map(item => [
             id_orden,
-            item.id_producto || item.id,
-            item.cantidad,
-            item.precio || item.precio_unitario
+            item.id_producto || item.id || item.producto_id || 1,
+            item.cantidad || item.cant || 1,
+            item.precio || item.precio_unitario || item.precioUnitario || 0
         ]);
 
         const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario) VALUES ?';
@@ -111,12 +115,12 @@ app.post('/api/ordenes', (req, res) => {
                 return res.status(500).json({ error: errDetalles.message });
             }
 
-            res.json({ mensaje: 'Orden creada con éxito', id_orden });
+            res.json({ mensaje: '¡Orden creada con éxito!', id_orden });
         });
     });
 });
 
-// 7. ACTUALIZAR ESTADO DE UNA ÓRDEN (Ej: Cambiar a 'Pagada')
+// 7. ACTUALIZAR ESTADO DE UNA ÓRDEN (Ej: Cambiar a 'Pagada' para activar el trigger)
 app.put('/api/ordenes/:id', (req, res) => {
     const { id } = req.params;
     const { estado } = req.body;

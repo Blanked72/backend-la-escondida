@@ -74,44 +74,40 @@ app.get('/api/ordenes', (req, res) => {
     });
 });
 
-// 6. CREAR NUEVA ÓRDEN (COMANDA ULTRA FLEXIBLE)
+// 6. CREAR NUEVA ÓRDEN (CORREGIDO 'Pendiente' CON COMILLAS SIMPLES)
 app.post('/api/ordenes', (req, res) => {
-    console.log("Datos recibidos en el backend:", req.body);
-
-    // Captura cualquier variante de nombre para el número de mesa
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
-    
-    // Captura cualquier variante de nombre para el arreglo de productos
     const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
     const totalFinal = req.body.total || 0;
 
     if (!Array.isArray(detallesEnviados) || detallesEnviados.length === 0) {
-        return res.status(400).json({ error: 'El carrito está vacío o no se enviaron productos.' });
+        return res.status(400).json({ error: 'El carrito está vacío' });
     }
 
-    const sqlOrden = 'INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, "Pendiente")';
+    // Corrección aquí: 'Pendiente' entre comillas simples dentro de la consulta SQL
+    const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
     
     db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
         if (err) {
-            console.error('Error al crear orden en MySQL:', err);
+            console.error('Error orden MySQL:', err);
             return res.status(500).json({ error: err.message });
         }
 
         const id_orden = result.insertId;
 
-        // Mapea cada producto adaptándose a cualquier propiedad enviada desde el HTML
-        const valoresDetalles = detallesEnviados.map(item => [
-            id_orden,
-            item.id_producto || item.id || item.producto_id || 1,
-            item.cantidad || item.cant || 1,
-            item.precio || item.precio_unitario || item.precioUnitario || 0
-        ]);
+        const valoresDetalles = detallesEnviados.map(item => {
+            const prodId = parseInt(item.id_producto || item.id || item.producto_id);
+            const cant = parseInt(item.cantidad || item.cant || 1);
+            const precio = parseFloat(item.precio || item.precio_unitario || item.precioUnitario || 0);
+
+            return [id_orden, isNaN(prodId) ? 1 : prodId, cant, precio];
+        });
 
         const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario) VALUES ?';
 
         db.query(sqlDetalles, [valoresDetalles], (errDetalles) => {
             if (errDetalles) {
-                console.error('Error al insertar detalles en MySQL:', errDetalles);
+                console.error('Error detalles MySQL:', errDetalles);
                 return res.status(500).json({ error: errDetalles.message });
             }
 
@@ -120,7 +116,7 @@ app.post('/api/ordenes', (req, res) => {
     });
 });
 
-// 7. ACTUALIZAR ESTADO DE UNA ÓRDEN (Ej: Cambiar a 'Pagada' para activar el trigger)
+// 7. ACTUALIZAR ESTADO DE UNA ÓRDEN
 app.put('/api/ordenes/:id', (req, res) => {
     const { id } = req.params;
     const { estado } = req.body;

@@ -180,6 +180,24 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
     });
 });
 
+// 13. REPORTE DE VENTAS DEL DÍA
+app.get('/api/reportes/ventas', (req, res) => {
+    const sql = `
+        SELECT 
+            COUNT(id_orden) AS total_ordenes, 
+            COALESCE(SUM(total), 0) AS total_vendido 
+        FROM ordenes 
+        WHERE estado = 'Pagada'
+    `;
+    db.query(sql, (err, results) => {
+        if (err) {
+            console.error('Error al generar reporte:', err);
+            return res.status(500).json({ error: err.message });
+        }
+        res.json(results[0]);
+    });
+});
+
 // Puerto dinámico para Render
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Pool de conexiones para evitar desconexiones por inactividad
+// Pool de conexiones para que la base de datos no se desconecte
 const db = mysql.createPool({
     host: 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
     port: 28686,
@@ -20,7 +20,7 @@ const db = mysql.createPool({
     queueLimit: 0
 });
 
-// Probar la conexión inicial
+// Comprobar la conexión inicial
 db.getConnection((err, connection) => {
     if (err) {
         console.error('Error conectando a la base de datos (Pool):', err);
@@ -32,22 +32,10 @@ db.getConnection((err, connection) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('API Backend La Escondida - Funcionando correctamente (Conexión Pool Activa)');
+    res.send('API Backend La Escondida - Funcionando correctamente');
 });
 
-app.get('/api/categorias', (req, res) => {
-    db.query('SELECT * FROM categorias', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.get('/api/productos', (req, res) => {
-    db.query('SELECT * FROM productos WHERE disponible = 1', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
+// --- RUTAS DE ORDENES Y CAJA ---
 
 app.post('/api/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
@@ -86,22 +74,6 @@ app.get('/api/ordenes', (req, res) => {
     });
 });
 
-app.get('/api/ordenes/:id/detalles', (req, res) => {
-    const { id } = req.params;
-    db.query('SELECT * FROM detalles_orden WHERE id_orden = ?', [id], (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.get('/api/reportes/ventas', (req, res) => {
-    const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results[0]);
-    });
-});
-
 app.get('/api/cocina', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, IFNULL(d.notas, p.nombre) AS nombre, d.cantidad 
@@ -132,12 +104,12 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
+// AQUI SE DESCUENTA EL INVENTARIO CON "CANTIDAD_NECESARIA"
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
     db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         
-        // CORREGIDO: Vuelve a usar cantidad_necesaria
         const sqlConsulta = `
             SELECT r.id_insumo, SUM(r.cantidad_necesaria * d.cantidad) as total_gastado
             FROM detalles_orden d
@@ -177,16 +149,39 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
     });
 });
 
+app.get('/api/reportes/ventas', (req, res) => {
+    const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results[0]);
+    });
+});
+
+// --- RUTAS DE PRODUCTOS ---
+app.get('/api/productos', (req, res) => {
+    db.query('SELECT * FROM productos WHERE disponible = 1', (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
 app.post('/api/productos', (req, res) => {
     const { nombre, precio } = req.body;
-    db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => res.json({ mensaje: 'Ok' }));
+    db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ok' })
+    });
 });
 
 app.delete('/api/productos/:id', (req, res) => {
     const { id } = req.params;
-    db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => res.json({ mensaje: 'Ok' }));
+    db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ok' })
+    });
 });
 
+// --- RUTAS DE INSUMOS ---
 app.get('/api/insumos', (req, res) => {
     db.query('SELECT * FROM insumos', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -196,17 +191,23 @@ app.get('/api/insumos', (req, res) => {
 
 app.post('/api/insumos', (req, res) => {
     const { nombre, cantidad_actual } = req.body;
-    db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => res.json({ mensaje: 'Ok' }));
+    db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ok' })
+    });
 });
 
 app.put('/api/insumos/:id/stock', (req, res) => {
     const { id } = req.params;
     const { cantidad_agregar } = req.body;
-    db.query('UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?', [parseFloat(cantidad_agregar), id], (err) => res.json({ mensaje: 'Ok' }));
+    db.query('UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?', [parseFloat(cantidad_agregar), id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ok' })
+    });
 });
 
+// --- RUTAS DE RECETAS (CON CANTIDAD_NECESARIA) ---
 app.get('/api/recetas', (req, res) => {
-    // CORREGIDO: Vuelve a usar cantidad_necesaria
     const sql = `
         SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_necesaria 
         FROM recetas r

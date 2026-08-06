@@ -26,7 +26,11 @@ db.getConnection((err, connection) => {
         return;
     }
     console.log('¡Conectado exitosamente al Pool de MySQL!');
+    
+    // Aseguramos que existan las columnas sin detener el servidor si ya existen
     connection.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", () => {});
+    connection.query("ALTER TABLE insumos ADD COLUMN stock_minimo DECIMAL(10,2) DEFAULT 5", () => {});
+    
     connection.release();
 });
 
@@ -132,7 +136,7 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
 
         db.query(sqlDescuentoUnificado, [id], (errDescuento) => {
             if (errDescuento) {
-                return res.status(500).json({ error: "Orden marcada como pagada pero falló el descuento de inventario: " + errDescuento.message });
+                return res.status(500).json({ error: "Orden cobrada, pero falló el descuento de inventario: " + errDescuento.message });
             }
 
             res.json({ mensaje: `¡Orden #${id} cobrada exitosamente!` });
@@ -144,7 +148,7 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
 // --- RUTAS DE REPORTES Y VENTAS POR DÍA ---
 // ==========================================
 
-// 1. Reporte acumulado general (Compatibilidad)
+// Reporte acumulado general
 app.get('/api/reportes/ventas', (req, res) => {
     const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
     db.query(sql, (err, results) => {
@@ -153,7 +157,7 @@ app.get('/api/reportes/ventas', (req, res) => {
     });
 });
 
-// 2. Reporte del día actual con ajuste de zona horaria (-06:00)
+// Reporte del día actual con ajuste de zona horaria (-06:00)
 app.get('/api/reportes/ventas/hoy', (req, res) => {
     const sql = `
         SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido 
@@ -167,7 +171,7 @@ app.get('/api/reportes/ventas/hoy', (req, res) => {
     });
 });
 
-// 3. Historial de ventas agrupado por cada día de trabajo
+// Historial de ventas agrupado por cada día de trabajo
 app.get('/api/reportes/ventas/historial', (req, res) => {
     const sql = `
         SELECT DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d') as fecha, 
@@ -270,6 +274,23 @@ app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
     db.query('DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?', [id_producto, id_insumo], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
+    });
+});
+
+// ==========================================
+// --- RUTA PARA ALERTAS DE INVENTARIO ---
+// ==========================================
+
+app.get('/api/alertas/inventario', (req, res) => {
+    // Compara el stock actual vs el mínimo establecido en la BD
+    const sql = `
+        SELECT nombre, cantidad_actual, stock_minimo 
+        FROM insumos 
+        WHERE cantidad_actual <= stock_minimo
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
     });
 });
 

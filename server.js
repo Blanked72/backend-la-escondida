@@ -104,46 +104,60 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// AQUI SE DESCUENTA EL INVENTARIO CON "CANTIDAD_REQUERIDA"
+// AQUI SE DESCUENTA EL INVENTARIO CON "CANTIDAD_REQUERIDA" (Candado anti-doble cobro)
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
-    db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (err) => {
+
+    // 1. VERIFICAR QUE LA ORDEN NO ESTÉ PAGADA YA PARA EVITAR DOBLE DESCUENTO
+    db.query("SELECT estado FROM ordenes WHERE id_orden = ?", [id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         
-        const sqlConsulta = `
-            SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) as total_gastado
-            FROM detalles_orden d
-            JOIN recetas r ON d.id_producto = r.id_producto
-            WHERE d.id_orden = ?
-            GROUP BY r.id_insumo
-        `;
-        db.query(sqlConsulta, [id], (errConsulta, ingredientes) => {
-            if (errConsulta) return res.status(500).json({ error: errConsulta.message });
-            
-            if (!ingredientes || ingredientes.length === 0) {
-                return res.json({ mensaje: `Orden cobrada, pero no había recetas para descontar stock.` });
-            }
-            
-            let procesados = 0;
-            let erroresStock = [];
+        if (result.length === 0) return res.status(404).json({ error: "Orden no encontrada" });
+        
+        if (result[0].estado === 'Pagada') {
+            // Si ya dice 'Pagada', detenemos todo aquí, no hacemos nada más.
+            return res.json({ mensaje: "Esta orden ya había sido cobrada anteriormente." });
+        }
 
-            ingredientes.forEach(ing => {
-                db.query(
-                    "UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id_insumo = ?",
-                    [ing.total_gastado, ing.id_insumo],
-                    (errUpd) => {
-                        if (errUpd) erroresStock.push(errUpd.message);
-                        
-                        procesados++;
-                        if (procesados === ingredientes.length) {
-                            if (erroresStock.length > 0) {
-                                res.status(500).json({ error: "Orden pagada pero falló descuento de stock: " + erroresStock.join(', ') });
-                            } else {
-                                res.json({ mensaje: `Orden ${id} cobrada y stock descontado.` });
+        // 2. SI NO ESTABA PAGADA, LA ACTUALIZAMOS Y DESCONTAMOS EL STOCK
+        db.query("UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ?", [id], (errUpd) => {
+            if (errUpd) return res.status(500).json({ error: errUpd.message });
+            
+            const sqlConsulta = `
+                SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) as total_gastado
+                FROM detalles_orden d
+                JOIN recetas r ON d.id_producto = r.id_producto
+                WHERE d.id_orden = ?
+                GROUP BY r.id_insumo
+            `;
+            db.query(sqlConsulta, [id], (errConsulta, ingredientes) => {
+                if (errConsulta) return res.status(500).json({ error: errConsulta.message });
+                
+                if (!ingredientes || ingredientes.length === 0) {
+                    return res.json({ mensaje: `Orden cobrada, pero no había recetas para descontar stock.` });
+                }
+                
+                let procesados = 0;
+                let erroresStock = [];
+
+                ingredientes.forEach(ing => {
+                    db.query(
+                        "UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id_insumo = ?",
+                        [ing.total_gastado, ing.id_insumo],
+                        (errUpdStock) => {
+                            if (errUpdStock) erroresStock.push(errUpdStock.message);
+                            
+                            procesados++;
+                            if (procesados === ingredientes.length) {
+                                if (erroresStock.length > 0) {
+                                    res.status(500).json({ error: "Orden pagada pero falló descuento de stock: " + erroresStock.join(', ') });
+                                } else {
+                                    res.json({ mensaje: `Orden ${id} cobrada y stock descontado.` });
+                                }
                             }
                         }
-                    }
-                );
+                    );
+                });
             });
         });
     });

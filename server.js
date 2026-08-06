@@ -34,7 +34,9 @@ app.get('/', (req, res) => {
     res.send('API Backend La Escondida - Funcionando correctamente');
 });
 
-// --- RUTAS DE ORDENES Y CAJA ---
+// ==========================================
+// --- RUTAS DE ÓRDENES, COCINA Y CAJA ---
+// ==========================================
 
 app.post('/api/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
@@ -103,7 +105,7 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// Ruta de cobro atómica
+// Cobro atómico con descuento de stock
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
@@ -138,6 +140,11 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
     });
 });
 
+// ==========================================
+// --- RUTAS DE REPORTES Y VENTAS POR DÍA ---
+// ==========================================
+
+// 1. Reporte acumulado histórico (Compatibilidad)
 app.get('/api/reportes/ventas', (req, res) => {
     const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
     db.query(sql, (err, results) => {
@@ -146,7 +153,38 @@ app.get('/api/reportes/ventas', (req, res) => {
     });
 });
 
-// --- RUTAS DE PRODUCTOS ---
+// 2. Reporte EXCLUSIVO del día actual (se reinicia automáticamente a las 00:00)
+app.get('/api/reportes/ventas/hoy', (req, res) => {
+    const sql = `
+        SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido 
+        FROM ordenes 
+        WHERE estado = 'Pagada' AND DATE(fecha_creacion) = CURDATE()
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results[0]);
+    });
+});
+
+// 3. Historial de ventas agrupado día por día
+app.get('/api/reportes/ventas/historial', (req, res) => {
+    const sql = `
+        SELECT DATE_FORMAT(fecha_creacion, '%Y-%m-%d') as fecha, COUNT(id_orden) as total_ordenes, COALESCE(SUM(total), 0) as total_vendido
+        FROM ordenes
+        WHERE estado = 'Pagada'
+        GROUP BY DATE(fecha_creacion)
+        ORDER BY fecha DESC
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+// ==========================================
+// --- RUTAS DE PRODUCTOS, INSUMOS Y RECETAS ---
+// ==========================================
+
 app.get('/api/productos', (req, res) => {
     db.query('SELECT * FROM productos WHERE disponible = 1', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -170,7 +208,6 @@ app.delete('/api/productos/:id', (req, res) => {
     });
 });
 
-// --- RUTAS DE INSUMOS ---
 app.get('/api/insumos', (req, res) => {
     db.query('SELECT * FROM insumos ORDER BY nombre ASC', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -186,7 +223,6 @@ app.post('/api/insumos', (req, res) => {
     });
 });
 
-// Modificación de stock (Acepta valores positivos para sumar y negativos para restar)
 app.put('/api/insumos/:id/stock', (req, res) => {
     const { id } = req.params;
     const { cantidad_agregar } = req.body;
@@ -203,7 +239,6 @@ app.put('/api/insumos/:id/stock', (req, res) => {
     });
 });
 
-// --- RUTAS DE RECETAS ---
 app.get('/api/recetas', (req, res) => {
     const sql = `
         SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida 
@@ -213,20 +248,6 @@ app.get('/api/recetas', (req, res) => {
         ORDER BY p.nombre ASC
     `;
     db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.get('/api/recetas/:id_producto', (req, res) => {
-    const { id_producto } = req.params;
-    const sql = `
-        SELECT r.id_producto, r.id_insumo, r.cantidad_requerida, i.nombre as nombre_insumo 
-        FROM recetas r
-        JOIN insumos i ON r.id_insumo = i.id_insumo
-        WHERE r.id_producto = ?
-    `;
-    db.query(sql, [id_producto], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });

@@ -263,6 +263,26 @@ app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
     });
 });
 
+// RUTA DETECTIVE: Para descubrir por qué descuenta doble
+app.get('/api/detective/:id_orden', (req, res) => {
+    const { id_orden } = req.params;
+    const sql = `
+        SELECT r.id_insumo, i.nombre as ingrediente, d.cantidad as cantidad_vendida, r.cantidad_requerida as receta_pide, 
+        (r.cantidad_requerida * d.cantidad) as total_a_descontar
+        FROM detalles_orden d
+        JOIN recetas r ON d.id_producto = r.id_producto
+        JOIN insumos i ON r.id_insumo = i.id_insumo
+        WHERE d.id_orden = ?
+    `;
+    db.query(sql, [id_orden], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({
+            mensaje: "Si 'total_a_descontar' dice 1, pero tu inventario bajó 2, TIENES UN TRIGGER OCULTO EN DBeaver.",
+            calculo_matematico: result
+        });
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Servidor corriendo en el puerto ${PORT}`);

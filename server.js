@@ -104,68 +104,42 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// --- RUTA DE PAGO CON DIAGNÓSTICO DETALLADO ---
+// --- RUTA DE PAGO DEFINITIVA CON UPDATE ATÓMICO UNIFICADO ---
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
-    // Candado Atómico Anti-Doble Clic
-    const sqlUpdate = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
+    // 1. Cambiar estado a 'Pagada' con candado atómico (solo si era 'Lista' o 'Pendiente')
+    const sqlUpdateEstado = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
     
-    db.query(sqlUpdate, [id], (errUpd, resultUpd) => {
+    db.query(sqlUpdateEstado, [id], (errUpd, resultUpd) => {
         if (errUpd) return res.status(500).json({ error: errUpd.message });
         
+        // Si no afectó ninguna fila, significa que esta orden ya se pagó previamente
         if (resultUpd.affectedRows === 0) {
-            return res.json({ mensaje: "Esta orden ya había sido cobrada." });
+            return res.json({ mensaje: "Esta orden ya había sido cobrada anteriormente." });
         }
 
-        // Consultar insumos requeridos sumando cantidades
-        const sqlConsulta = `
-            SELECT r.id_insumo, i.nombre, i.cantidad_actual,
-                   SUM(r.cantidad_requerida * d.cantidad) as total_gastado
-            FROM detalles_orden d
-            JOIN recetas r ON d.id_producto = r.id_producto
-            JOIN insumos i ON r.id_insumo = i.id_insumo
-            WHERE d.id_orden = ?
-            GROUP BY r.id_insumo, i.nombre, i.cantidad_actual
+        // 2. DESCUENTO ATÓMICO EN UNA SOLA CONSULTA SQL (Sin bucles forEach)
+        const sqlDescuentoUnificado = `
+            UPDATE insumos i
+            JOIN (
+                SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) AS total_a_restar
+                FROM detalles_orden d
+                JOIN recetas r ON d.id_producto = r.id_producto
+                WHERE d.id_orden = ?
+                GROUP BY r.id_insumo
+            ) sub ON i.id_insumo = sub.id_insumo
+            SET i.cantidad_actual = i.cantidad_actual - sub.total_a_restar
         `;
-        db.query(sqlConsulta, [id], (errConsulta, ingredientes) => {
-            if (errConsulta) return res.status(500).json({ error: errConsulta.message });
-            
-            if (!ingredientes || ingredientes.length === 0) {
-                return res.json({ mensaje: `Orden cobrada, no requiere insumos.` });
+
+        db.query(sqlDescuentoUnificado, [id], (errDescuento, resultDescuento) => {
+            if (errDescuento) {
+                console.error("Error al descontar inventario:", errDescuento);
+                return res.status(500).json({ error: "Orden marcada como pagada pero falló el descuento de inventario: " + errDescuento.message });
             }
-            
-            let procesados = 0;
-            let erroresStock = [];
-            let desglose = [];
 
-            ingredientes.forEach(ing => {
-                const stockAntes = parseFloat(ing.cantidad_actual);
-                const descontar = parseFloat(ing.total_gastado);
-                const stockDespues = stockAntes - descontar;
-
-                db.query(
-                    "UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id_insumo = ?",
-                    [descontar, ing.id_insumo],
-                    (errUpdStock) => {
-                        if (errUpdStock) {
-                            erroresStock.push(errUpdStock.message);
-                        } else {
-                            desglose.push(`${ing.nombre}: Tenías ${stockAntes}, se restó ${descontar}, queda en ${stockDespues}`);
-                        }
-                        
-                        procesados++;
-                        if (procesados === ingredientes.length) {
-                            if (erroresStock.length > 0) {
-                                res.status(500).json({ error: "Falló descuento: " + erroresStock.join(', ') });
-                            } else {
-                                res.json({ 
-                                    mensaje: `¡Orden ${id} cobrada! Detalle: ` + desglose.join(' | ') 
-                                });
-                            }
-                        }
-                    }
-                );
+            res.json({ 
+                mensaje: `¡Orden #${id} cobrada exitosamente! Inventario actualizado en una sola operación atómica.` 
             });
         });
     });
@@ -271,26 +245,6 @@ app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
     db.query('DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?', [id_producto, id_insumo], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
-    });
-});
-
-// --- RUTA DETECTIVE ---
-app.get('/api/detective/:id_orden', (req, res) => {
-    const { id_orden } = req.params;
-    const sql = `
-        SELECT r.id_insumo, i.nombre as ingrediente, d.cantidad as cantidad_vendida, r.cantidad_requerida as receta_pide, 
-        (r.cantidad_requerida * d.cantidad) as total_a_descontar
-        FROM detalles_orden d
-        JOIN recetas r ON d.id_producto = r.id_producto
-        JOIN insumos i ON r.id_insumo = i.id_insumo
-        WHERE d.id_orden = ?
-    `;
-    db.query(sql, [id_orden], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({
-            mensaje: "Resultados del cálculo de la orden:",
-            calculo_matematico: result
-        });
     });
 });
 

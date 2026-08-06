@@ -105,7 +105,7 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// Cobro atómico con descuento de stock
+// Cobro atómico con descuento de inventario unificado
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
@@ -144,7 +144,7 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
 // --- RUTAS DE REPORTES Y VENTAS POR DÍA ---
 // ==========================================
 
-// 1. Reporte acumulado histórico (Compatibilidad)
+// 1. Reporte acumulado general (Compatibilidad)
 app.get('/api/reportes/ventas', (req, res) => {
     const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
     db.query(sql, (err, results) => {
@@ -153,12 +153,13 @@ app.get('/api/reportes/ventas', (req, res) => {
     });
 });
 
-// 2. Reporte EXCLUSIVO del día actual (se reinicia automáticamente a las 00:00)
+// 2. Reporte del día actual con ajuste de zona horaria (-06:00)
 app.get('/api/reportes/ventas/hoy', (req, res) => {
     const sql = `
         SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido 
         FROM ordenes 
-        WHERE estado = 'Pagada' AND DATE(fecha_creacion) = CURDATE()
+        WHERE estado = 'Pagada' 
+          AND DATE(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) = DATE(CONVERT_TZ(NOW(), '+00:00', '-06:00'))
     `;
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -166,13 +167,15 @@ app.get('/api/reportes/ventas/hoy', (req, res) => {
     });
 });
 
-// 3. Historial de ventas agrupado día por día
+// 3. Historial de ventas agrupado por cada día de trabajo
 app.get('/api/reportes/ventas/historial', (req, res) => {
     const sql = `
-        SELECT DATE_FORMAT(fecha_creacion, '%Y-%m-%d') as fecha, COUNT(id_orden) as total_ordenes, COALESCE(SUM(total), 0) as total_vendido
+        SELECT DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d') as fecha, 
+               COUNT(id_orden) as total_ordenes, 
+               COALESCE(SUM(total), 0) as total_vendido
         FROM ordenes
         WHERE estado = 'Pagada'
-        GROUP BY DATE(fecha_creacion)
+        GROUP BY DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d')
         ORDER BY fecha DESC
     `;
     db.query(sql, (err, results) => {

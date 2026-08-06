@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Pool de conexiones para que la base de datos no se desconecte
+// Pool de conexiones a la base de datos
 const db = mysql.createPool({
     host: 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
     port: 28686,
@@ -104,49 +104,64 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// AQUI SE DESCUENTA EL INVENTARIO CON CANDADO ATÓMICO (Versión Definitiva)
+// --- RUTA DE PAGO CON DIAGNÓSTICO DETALLADO ---
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
+    // Candado Atómico Anti-Doble Clic
     const sqlUpdate = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
     
     db.query(sqlUpdate, [id], (errUpd, resultUpd) => {
         if (errUpd) return res.status(500).json({ error: errUpd.message });
         
         if (resultUpd.affectedRows === 0) {
-            return res.json({ mensaje: "Esta orden ya había sido cobrada (doble clic evitado)." });
+            return res.json({ mensaje: "Esta orden ya había sido cobrada." });
         }
 
+        // Consultar insumos requeridos sumando cantidades
         const sqlConsulta = `
-            SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) as total_gastado
+            SELECT r.id_insumo, i.nombre, i.cantidad_actual,
+                   SUM(r.cantidad_requerida * d.cantidad) as total_gastado
             FROM detalles_orden d
             JOIN recetas r ON d.id_producto = r.id_producto
+            JOIN insumos i ON r.id_insumo = i.id_insumo
             WHERE d.id_orden = ?
-            GROUP BY r.id_insumo
+            GROUP BY r.id_insumo, i.nombre, i.cantidad_actual
         `;
         db.query(sqlConsulta, [id], (errConsulta, ingredientes) => {
             if (errConsulta) return res.status(500).json({ error: errConsulta.message });
             
             if (!ingredientes || ingredientes.length === 0) {
-                return res.json({ mensaje: `Orden cobrada, pero no requiere insumos del inventario.` });
+                return res.json({ mensaje: `Orden cobrada, no requiere insumos.` });
             }
             
             let procesados = 0;
             let erroresStock = [];
+            let desglose = [];
 
             ingredientes.forEach(ing => {
+                const stockAntes = parseFloat(ing.cantidad_actual);
+                const descontar = parseFloat(ing.total_gastado);
+                const stockDespues = stockAntes - descontar;
+
                 db.query(
                     "UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id_insumo = ?",
-                    [ing.total_gastado, ing.id_insumo],
+                    [descontar, ing.id_insumo],
                     (errUpdStock) => {
-                        if (errUpdStock) erroresStock.push(errUpdStock.message);
+                        if (errUpdStock) {
+                            erroresStock.push(errUpdStock.message);
+                        } else {
+                            desglose.push(`${ing.nombre}: Tenías ${stockAntes}, se restó ${descontar}, queda en ${stockDespues}`);
+                        }
                         
                         procesados++;
                         if (procesados === ingredientes.length) {
                             if (erroresStock.length > 0) {
-                                res.status(500).json({ error: "Orden pagada pero falló descuento: " + erroresStock.join(', ') });
+                                res.status(500).json({ error: "Falló descuento: " + erroresStock.join(', ') });
                             } else {
-                                res.json({ mensaje: `Orden ${id} cobrada y stock descontado exitosamente.` });
+                                res.json({ 
+                                    mensaje: `¡Orden ${id} cobrada! Detalle: ` + desglose.join(' | ') 
+                                });
                             }
                         }
                     }
@@ -176,7 +191,7 @@ app.post('/api/productos', (req, res) => {
     const { nombre, precio } = req.body;
     db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' })
+        res.json({ mensaje: 'Ok' });
     });
 });
 
@@ -184,7 +199,7 @@ app.delete('/api/productos/:id', (req, res) => {
     const { id } = req.params;
     db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' })
+        res.json({ mensaje: 'Ok' });
     });
 });
 
@@ -200,7 +215,7 @@ app.post('/api/insumos', (req, res) => {
     const { nombre, cantidad_actual } = req.body;
     db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' })
+        res.json({ mensaje: 'Ok' });
     });
 });
 
@@ -209,7 +224,7 @@ app.put('/api/insumos/:id/stock', (req, res) => {
     const { cantidad_agregar } = req.body;
     db.query('UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?', [parseFloat(cantidad_agregar), id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' })
+        res.json({ mensaje: 'Ok' });
     });
 });
 

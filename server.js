@@ -246,6 +246,23 @@ app.put('/api/insumos/:id/stock', (req, res) => {
     });
 });
 
+// NUEVA RUTA: Actualizar el stock mínimo de un insumo
+app.put('/api/insumos/:id/minimo', (req, res) => {
+    const { id } = req.params;
+    const { stock_minimo } = req.body;
+    
+    const minimo = parseFloat(stock_minimo);
+    if (isNaN(minimo)) {
+        return res.status(400).json({ error: 'Cantidad no válida' });
+    }
+
+    const sql = 'UPDATE insumos SET stock_minimo = ? WHERE id_insumo = ?';
+    db.query(sql, [minimo, id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Stock mínimo actualizado con éxito' });
+    });
+});
+
 app.get('/api/recetas', (req, res) => {
     const sql = `
         SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida 

@@ -104,16 +104,17 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// --- RUTA DE PRUEBA DEL FANTASMA (Solo simula el cobro, NO descuenta stock) ---
+// AQUI SE DESCUENTA EL INVENTARIO CON CANDADO ATÓMICO (Versión Definitiva)
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
     const sqlUpdate = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
+    
     db.query(sqlUpdate, [id], (errUpd, resultUpd) => {
         if (errUpd) return res.status(500).json({ error: errUpd.message });
         
         if (resultUpd.affectedRows === 0) {
-            return res.json({ mensaje: "Esta orden ya había sido cobrada." });
+            return res.json({ mensaje: "Esta orden ya había sido cobrada (doble clic evitado)." });
         }
 
         const sqlConsulta = `
@@ -126,11 +127,30 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
         db.query(sqlConsulta, [id], (errConsulta, ingredientes) => {
             if (errConsulta) return res.status(500).json({ error: errConsulta.message });
             
-            // AQUI ESTÁ LA MAGIA: En lugar de hacer el UPDATE al stock, solo respondemos éxito.
-            console.log("Ingredientes que se IBAN a descontar:", ingredientes);
+            if (!ingredientes || ingredientes.length === 0) {
+                return res.json({ mensaje: `Orden cobrada, pero no requiere insumos del inventario.` });
+            }
             
-            res.json({ 
-                mensaje: `PRUEBA FANTASMA: Orden ${id} cobrada. Revisa tu inventario, ¡no debió bajar nada!` 
+            let procesados = 0;
+            let erroresStock = [];
+
+            ingredientes.forEach(ing => {
+                db.query(
+                    "UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id_insumo = ?",
+                    [ing.total_gastado, ing.id_insumo],
+                    (errUpdStock) => {
+                        if (errUpdStock) erroresStock.push(errUpdStock.message);
+                        
+                        procesados++;
+                        if (procesados === ingredientes.length) {
+                            if (erroresStock.length > 0) {
+                                res.status(500).json({ error: "Orden pagada pero falló descuento: " + erroresStock.join(', ') });
+                            } else {
+                                res.json({ mensaje: `Orden ${id} cobrada y stock descontado exitosamente.` });
+                            }
+                        }
+                    }
+                );
             });
         });
     });
@@ -193,7 +213,7 @@ app.put('/api/insumos/:id/stock', (req, res) => {
     });
 });
 
-// --- RUTAS DE RECETAS (CON CANTIDAD_REQUERIDA) ---
+// --- RUTAS DE RECETAS ---
 app.get('/api/recetas', (req, res) => {
     const sql = `
         SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida 
@@ -239,7 +259,7 @@ app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
     });
 });
 
-// --- RUTA DETECTIVE: Para descubrir por qué descuenta doble ---
+// --- RUTA DETECTIVE ---
 app.get('/api/detective/:id_orden', (req, res) => {
     const { id_orden } = req.params;
     const sql = `
@@ -253,7 +273,7 @@ app.get('/api/detective/:id_orden', (req, res) => {
     db.query(sql, [id_orden], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({
-            mensaje: "Si 'total_a_descontar' dice 1, pero tu inventario bajó 2, TIENES UN TRIGGER OCULTO EN DBeaver.",
+            mensaje: "Resultados del cálculo de la orden:",
             calculo_matematico: result
         });
     });

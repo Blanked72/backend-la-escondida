@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Pool de conexiones a la base de datos
+// Pool de conexiones a MySQL (Aiven Cloud)
 const db = mysql.createPool({
     host: 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
     port: 28686,
@@ -20,10 +20,9 @@ const db = mysql.createPool({
     queueLimit: 0
 });
 
-// Comprobar la conexión inicial
 db.getConnection((err, connection) => {
     if (err) {
-        console.error('Error conectando a la base de datos (Pool):', err);
+        console.error('Error conectando a la base de datos:', err);
         return;
     }
     console.log('¡Conectado exitosamente al Pool de MySQL!');
@@ -104,22 +103,19 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// --- RUTA DE PAGO DEFINITIVA CON UPDATE ATÓMICO UNIFICADO ---
+// Ruta de cobro atómica
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
-    // 1. Cambiar estado a 'Pagada' con candado atómico (solo si era 'Lista' o 'Pendiente')
     const sqlUpdateEstado = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
     
     db.query(sqlUpdateEstado, [id], (errUpd, resultUpd) => {
         if (errUpd) return res.status(500).json({ error: errUpd.message });
         
-        // Si no afectó ninguna fila, significa que esta orden ya se pagó previamente
         if (resultUpd.affectedRows === 0) {
             return res.json({ mensaje: "Esta orden ya había sido cobrada anteriormente." });
         }
 
-        // 2. DESCUENTO ATÓMICO EN UNA SOLA CONSULTA SQL (Sin bucles forEach)
         const sqlDescuentoUnificado = `
             UPDATE insumos i
             JOIN (
@@ -132,15 +128,12 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
             SET i.cantidad_actual = i.cantidad_actual - sub.total_a_restar
         `;
 
-        db.query(sqlDescuentoUnificado, [id], (errDescuento, resultDescuento) => {
+        db.query(sqlDescuentoUnificado, [id], (errDescuento) => {
             if (errDescuento) {
-                console.error("Error al descontar inventario:", errDescuento);
                 return res.status(500).json({ error: "Orden marcada como pagada pero falló el descuento de inventario: " + errDescuento.message });
             }
 
-            res.json({ 
-                mensaje: `¡Orden #${id} cobrada exitosamente! Inventario actualizado en una sola operación atómica.` 
-            });
+            res.json({ mensaje: `¡Orden #${id} cobrada exitosamente!` });
         });
     });
 });
@@ -179,7 +172,7 @@ app.delete('/api/productos/:id', (req, res) => {
 
 // --- RUTAS DE INSUMOS ---
 app.get('/api/insumos', (req, res) => {
-    db.query('SELECT * FROM insumos', (err, results) => {
+    db.query('SELECT * FROM insumos ORDER BY nombre ASC', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
@@ -193,12 +186,20 @@ app.post('/api/insumos', (req, res) => {
     });
 });
 
+// Modificación de stock (Acepta valores positivos para sumar y negativos para restar)
 app.put('/api/insumos/:id/stock', (req, res) => {
     const { id } = req.params;
     const { cantidad_agregar } = req.body;
-    db.query('UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?', [parseFloat(cantidad_agregar), id], (err) => {
+    
+    const cambio = parseFloat(cantidad_agregar);
+    if (isNaN(cambio)) {
+        return res.status(400).json({ error: 'Cantidad no válida' });
+    }
+
+    const sql = 'UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?';
+    db.query(sql, [cambio, id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' });
+        res.json({ mensaje: 'Stock actualizado con éxito' });
     });
 });
 

@@ -168,54 +168,33 @@ app.get('/api/caja', (req, res) => {
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
-    const sqlVerificarStock = `
-        SELECT i.id_insumo, i.nombre, i.cantidad_actual, SUM(r.cantidad_requerida * d.cantidad) AS total_requerido
-        FROM detalles_orden d
-        JOIN recetas r ON d.id_producto = r.id_producto
-        JOIN insumos i ON r.id_insumo = i.id_insumo
-        WHERE d.id_orden = ?
-        GROUP BY i.id_insumo, i.nombre, i.cantidad_actual
-    `;
+    const sqlUpdateEstado = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
 
-    db.query(sqlVerificarStock, [id], (errVerificar, requeridos) => {
-        if (errVerificar) return res.status(500).json({ error: errVerificar.message });
+    db.query(sqlUpdateEstado, [id], (errUpd, resultUpd) => {
+        if (errUpd) return res.status(500).json({ error: errUpd.message });
 
-        const insumosFaltantes = requeridos.filter(r => r.cantidad_actual < r.total_requerido);
-        if (insumosFaltantes.length > 0) {
-            const detalle = insumosFaltantes
-                .map(i => `${i.nombre} (disponible: ${i.cantidad_actual}, requerido: ${i.total_requerido})`)
-                .join(', ');
-            return res.status(400).json({ error: `Stock insuficiente para: ${detalle}` });
+        if (resultUpd.affectedRows === 0) {
+            return res.json({ mensaje: "Esta orden ya había sido cobrada anteriormente." });
         }
 
-        const sqlUpdateEstado = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
+        const sqlDescuentoUnificado = `
+            UPDATE insumos i
+            JOIN (
+                SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) AS total_a_restar
+                FROM detalles_orden d
+                JOIN recetas r ON d.id_producto = r.id_producto
+                WHERE d.id_orden = ?
+                GROUP BY r.id_insumo
+            ) sub ON i.id_insumo = sub.id_insumo
+            SET i.cantidad_actual = i.cantidad_actual - sub.total_a_restar
+        `;
 
-        db.query(sqlUpdateEstado, [id], (errUpd, resultUpd) => {
-            if (errUpd) return res.status(500).json({ error: errUpd.message });
-
-            if (resultUpd.affectedRows === 0) {
-                return res.json({ mensaje: "Esta orden ya había sido cobrada anteriormente." });
+        db.query(sqlDescuentoUnificado, [id], (errDescuento) => {
+            if (errDescuento) {
+                return res.status(500).json({ error: "Orden cobrada, pero falló el descuento de inventario: " + errDescuento.message });
             }
 
-            const sqlDescuentoUnificado = `
-                UPDATE insumos i
-                JOIN (
-                    SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) AS total_a_restar
-                    FROM detalles_orden d
-                    JOIN recetas r ON d.id_producto = r.id_producto
-                    WHERE d.id_orden = ?
-                    GROUP BY r.id_insumo
-                ) sub ON i.id_insumo = sub.id_insumo
-                SET i.cantidad_actual = i.cantidad_actual - sub.total_a_restar
-            `;
-
-            db.query(sqlDescuentoUnificado, [id], (errDescuento) => {
-                if (errDescuento) {
-                    return res.status(500).json({ error: "Orden cobrada, pero falló el descuento de inventario: " + errDescuento.message });
-                }
-
-                res.json({ mensaje: `¡Orden #${id} cobrada exitosamente!` });
-            });
+            res.json({ mensaje: `¡Orden #${id} cobrada exitosamente!` });
         });
     });
 });

@@ -3,49 +3,150 @@ const mysql = require('mysql2');
 const cors = require('cors');
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-// Conexión a la base de datos en Aiven
+// Pool de conexiones a MySQL (Aiven Cloud)
 const db = mysql.createPool({
-    host: process.env.DB_HOST || 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
-    user: process.env.DB_USER || 'avnadmin',
-    password: process.env.DB_PASSWORD || 'AVNS_AXY807GPv_BP8_8m1V3',
-    database: process.env.DB_NAME || 'defaultdb',
-    port: process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 28686,
+    host: 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
+    port: 28686,
+    user: 'avnadmin',
+    password: 'AVNS_AXY807GPv_BP8_8m1V3',
+    database: 'defaultdb',
     ssl: { rejectUnauthorized: false },
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
 });
 
-db.getConnection((err, conn) => {
-    if (err) console.error('❌ Error Aiven:', err.message);
-    else {
-        console.log('✅ Conectado a Aiven');
-        conn.release();
+db.getConnection((err, connection) => {
+    if (err) {
+        console.error('Error conectando a la base de datos:', err);
+        return;
     }
+    console.log('¡Conectado exitosamente al Pool de MySQL!');
+    connection.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", () => {});
+    connection.release();
 });
 
-// Función interna para descontar insumos del inventario automáticamente
-function descontarInventarioPorOrden(detalles) {
-    detalles.forEach(item => {
-        const sql = `
-            UPDATE insumos i
-            JOIN recetas r ON i.id_insumo = r.id_insumo
-            SET i.cantidad_actual = i.cantidad_actual - (r.cantidad_requerida * ?)
-            WHERE r.id_producto = ?`;
-        db.query(sql, [item.cantidad, item.id_producto], (err) => {
-            if (err) console.error(`Error al descontar stock para producto ${item.id_producto}:`, err.message);
+app.get('/', (req, res) => {
+    res.send('API Backend La Escondida - Funcionando correctamente');
+});
+
+// --- RUTAS DE ORDENES Y CAJA ---
+
+app.post('/api/ordenes', (req, res) => {
+    const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
+    const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
+    const totalFinal = req.body.total || 0;
+
+    if (!Array.isArray(detallesEnviados) || detallesEnviados.length === 0) {
+        return res.status(400).json({ error: 'El carrito está vacío' });
+    }
+
+    const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
+    db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+
+        const id_orden = result.insertId;
+        const valoresDetalles = detallesEnviados.map(item => {
+            const prodId = parseInt(item.id_producto || item.id || item.producto_id);
+            const cant = parseInt(item.cantidad || item.cant || 1);
+            const precio = parseFloat(item.precio || item.precio_unitario || item.precioUnitario || 0);
+            const notas = item.nombre || null; 
+            return [id_orden, isNaN(prodId) ? 1 : prodId, cant, precio, notas];
+        });
+
+        const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
+        db.query(sqlDetalles, [valoresDetalles], (errDetalles) => {
+            if (errDetalles) return res.status(500).json({ error: errDetalles.message });
+            res.json({ mensaje: '¡Orden creada con éxito!', id_orden });
         });
     });
-}
+});
 
-// ------------------------------------------
-// 1. ÓRDENEN Y PEDIDOS
-// ------------------------------------------
+app.get('/api/ordenes', (req, res) => {
+    db.query('SELECT * FROM ordenes ORDER BY id_orden DESC', (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
 
-// Obtener catálogo de productos disponibles
+app.get('/api/cocina', (req, res) => {
+    const sql = `
+        SELECT o.id_orden, o.numero_mesa, IFNULL(d.notas, p.nombre) AS nombre, d.cantidad 
+        FROM ordenes o
+        JOIN detalles_orden d ON o.id_orden = d.id_orden
+        JOIN productos p ON d.id_producto = p.id_producto
+        WHERE o.estado = 'Pendiente'
+        ORDER BY o.id_orden ASC
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+app.put('/api/ordenes/:id/lista', (req, res) => {
+    const { id } = req.params;
+    db.query("UPDATE ordenes SET estado = 'Lista' WHERE id_orden = ?", [id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: `Orden ${id} marcada como Lista` });
+    });
+});
+
+app.get('/api/caja', (req, res) => {
+    db.query("SELECT * FROM ordenes WHERE estado = 'Lista' ORDER BY id_orden ASC", (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+// Ruta de cobro atómica
+app.put('/api/ordenes/:id/pagar', (req, res) => {
+    const { id } = req.params;
+
+    const sqlUpdateEstado = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
+    
+    db.query(sqlUpdateEstado, [id], (errUpd, resultUpd) => {
+        if (errUpd) return res.status(500).json({ error: errUpd.message });
+        
+        if (resultUpd.affectedRows === 0) {
+            return res.json({ mensaje: "Esta orden ya había sido cobrada anteriormente." });
+        }
+
+        const sqlDescuentoUnificado = `
+            UPDATE insumos i
+            JOIN (
+                SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) AS total_a_restar
+                FROM detalles_orden d
+                JOIN recetas r ON d.id_producto = r.id_producto
+                WHERE d.id_orden = ?
+                GROUP BY r.id_insumo
+            ) sub ON i.id_insumo = sub.id_insumo
+            SET i.cantidad_actual = i.cantidad_actual - sub.total_a_restar
+        `;
+
+        db.query(sqlDescuentoUnificado, [id], (errDescuento) => {
+            if (errDescuento) {
+                return res.status(500).json({ error: "Orden marcada como pagada pero falló el descuento de inventario: " + errDescuento.message });
+            }
+
+            res.json({ mensaje: `¡Orden #${id} cobrada exitosamente!` });
+        });
+    });
+});
+
+app.get('/api/reportes/ventas', (req, res) => {
+    const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results[0]);
+    });
+});
+
+// --- RUTAS DE PRODUCTOS ---
 app.get('/api/productos', (req, res) => {
     db.query('SELECT * FROM productos WHERE disponible = 1', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -53,148 +154,102 @@ app.get('/api/productos', (req, res) => {
     });
 });
 
-// Crear nuevo pedido (Descuenta stock automáticamente)
-app.post('/api/ordenes', (req, res) => {
-    const { numero_mesa, detalles, total } = req.body;
-    if (!numero_mesa || !detalles || detalles.length === 0) {
-        return res.status(400).json({ error: 'Faltan datos requeridos en la orden.' });
-    }
-
-    const sqlOrden = 'INSERT INTO ordenes (numero_mesa, total, estado, fecha_creacion) VALUES (?, ?, "Pendiente", NOW())';
-    db.query(sqlOrden, [numero_mesa, total], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-
-        const id_orden = result.insertId;
-        const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
-        const values = detalles.map(item => [
-            id_orden, 
-            item.id_producto, 
-            item.cantidad, 
-            item.precio_unitario, 
-            item.notas || ''
-        ]);
-
-        db.query(sqlDetalles, [values], (errDet) => {
-            if (errDet) return res.status(500).json({ error: errDet.message });
-            
-            // Ejecutar el descuento automático de insumos en la BD
-            descontarInventarioPorOrden(detalles);
-
-            res.json({ message: 'Orden creada exitosamente', id_orden });
-        });
-    });
-});
-
-// Obtener todas las órdenes activas del día
-app.get('/api/ordenes', (req, res) => {
-    const sql = `
-        SELECT o.id_orden, o.numero_mesa, o.total, o.estado, o.fecha_creacion,
-               JSON_ARRAYAGG(
-                   JSON_OBJECT(
-                       'producto', p.nombre, 
-                       'cantidad', d.cantidad, 
-                       'precio_unitario', d.precio_unitario,
-                       'notas', d.notas
-                   )
-               ) AS detalles
-        FROM ordenes o
-        LEFT JOIN detalles_orden d ON o.id_orden = d.id_orden
-        LEFT JOIN productos p ON d.id_producto = p.id_producto
-        WHERE DATE(o.fecha_creacion) = CURDATE()
-        GROUP BY o.id_orden
-        ORDER BY o.id_orden DESC`;
-
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-// Cambiar estado de la orden (Pendiente -> Listo -> Entregado -> Pagado)
-app.put('/api/ordenes/:id/estado', (req, res) => {
-    const { estado } = req.body;
-    db.query('UPDATE ordenes SET estado = ? WHERE id_orden = ?', [estado, req.params.id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: `Estado actualizado a ${estado}` });
-    });
-});
-
-// ------------------------------------------
-// 2. ADMINISTRACIÓN DE PRODUCTOS
-// ------------------------------------------
-
 app.post('/api/productos', (req, res) => {
-    const { id_categoria, nombre, descripcion, precio, imagen_url, disponible } = req.body;
-    const sql = 'INSERT INTO productos (id_categoria, nombre, descripcion, precio, imagen_url, disponible) VALUES (?, ?, ?, ?, ?, ?)';
-    db.query(sql, [id_categoria, nombre, descripcion, precio, imagen_url, disponible ?? 1], (err, result) => {
+    const { nombre, precio } = req.body;
+    db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Producto agregado', id_producto: result.insertId });
+        res.json({ mensaje: 'Ok' });
     });
 });
 
 app.delete('/api/productos/:id', (req, res) => {
-    db.query('DELETE FROM productos WHERE id_producto = ?', [req.params.id], (err) => {
+    const { id } = req.params;
+    db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Producto eliminado' });
+        res.json({ mensaje: 'Ok' });
     });
 });
 
-// ------------------------------------------
-// 3. INVENTARIO E INSUMOS
-// ------------------------------------------
-
+// --- RUTAS DE INSUMOS ---
 app.get('/api/insumos', (req, res) => {
-    db.query('SELECT * FROM insumos', (err, results) => {
+    db.query('SELECT * FROM insumos ORDER BY nombre ASC', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
 });
 
 app.post('/api/insumos', (req, res) => {
-    const { nombre, cantidad_actual, stock_minimo } = req.body;
-    const sql = 'INSERT INTO insumos (nombre, cantidad_actual, stock_minimo) VALUES (?, ?, ?)';
-    db.query(sql, [nombre, cantidad_actual, stock_minimo || 5], (err, result) => {
+    const { nombre, cantidad_actual } = req.body;
+    db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Insumo agregado', id_insumo: result.insertId });
+        res.json({ mensaje: 'Ok' });
     });
 });
 
-app.delete('/api/insumos/:id', (req, res) => {
-    db.query('DELETE FROM insumos WHERE id_insumo = ?', [req.params.id], (err) => {
+// Modificación de stock (Acepta valores positivos para sumar y negativos para restar)
+app.put('/api/insumos/:id/stock', (req, res) => {
+    const { id } = req.params;
+    const { cantidad_agregar } = req.body;
+    
+    const cambio = parseFloat(cantidad_agregar);
+    if (isNaN(cambio)) {
+        return res.status(400).json({ error: 'Cantidad no válida' });
+    }
+
+    const sql = 'UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?';
+    db.query(sql, [cambio, id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Insumo eliminado' });
+        res.json({ mensaje: 'Stock actualizado con éxito' });
     });
 });
 
-// ------------------------------------------
-// 4. RECETAS
-// ------------------------------------------
+// --- RUTAS DE RECETAS ---
+app.get('/api/recetas', (req, res) => {
+    const sql = `
+        SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida 
+        FROM recetas r
+        JOIN productos p ON r.id_producto = p.id_producto
+        JOIN insumos i ON r.id_insumo = i.id_insumo
+        ORDER BY p.nombre ASC
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+app.get('/api/recetas/:id_producto', (req, res) => {
+    const { id_producto } = req.params;
+    const sql = `
+        SELECT r.id_producto, r.id_insumo, r.cantidad_requerida, i.nombre as nombre_insumo 
+        FROM recetas r
+        JOIN insumos i ON r.id_insumo = i.id_insumo
+        WHERE r.id_producto = ?
+    `;
+    db.query(sql, [id_producto], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
 
 app.post('/api/recetas', (req, res) => {
     const { id_producto, id_insumo, cantidad_requerida } = req.body;
-    const sql = 'INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE cantidad_requerida = ?';
-    db.query(sql, [id_producto, id_insumo, cantidad_requerida, cantidad_requerida], (err) => {
+    db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?)', 
+    [id_producto, id_insumo, cantidad_requerida], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Receta guardada' });
+        res.json({ mensaje: 'Ok' });
     });
 });
 
-// ------------------------------------------
-// 5. REPORTES DE VENTAS
-// ------------------------------------------
-
-app.get('/api/reportes/ventas', (req, res) => {
-    const sqlTotales = "SELECT COUNT(*) AS ordenes_totales, COALESCE(SUM(total), 0) AS total_ventas FROM ordenes WHERE estado = 'Pagado' AND DATE(fecha_creacion) = CURDATE()";
-    const sqlDetallado = "SELECT id_orden, numero_mesa, total, fecha_creacion FROM ordenes WHERE estado = 'Pagado' AND DATE(fecha_creacion) = CURDATE() ORDER BY fecha_creacion DESC";
-
-    db.query(sqlTotales, (err, resumen) => {
+app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
+    const { id_producto, id_insumo } = req.params;
+    db.query('DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?', [id_producto, id_insumo], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        db.query(sqlDetallado, (errDet, historial) => {
-            if (errDet) return res.status(500).json({ error: errDet.message });
-            res.json({ resumen: resumen[0], historial });
-        });
+        res.json({ mensaje: 'Ok' });
     });
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Servidor ejecutándose en puerto ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Servidor corriendo en el puerto ${PORT}`);
+});

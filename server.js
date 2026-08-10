@@ -1,50 +1,89 @@
 const express = require('express');
 const mysql = require('mysql2');
+const path = require('path');
 const cors = require('cors');
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Pool de conexiones a MySQL (Aiven Cloud)
-const db = mysql.createPool({
-    host: 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
-    port: 28686,
-    user: 'avnadmin',
-    password: 'AVNS_AXY807GPv_BP8_8m1V3',
-    database: 'defaultdb',
-    ssl: { rejectUnauthorized: false },
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+// Configuración de la conexión a MySQL
+const db = mysql.createConnection({
+    host: 'localhost',
+    user: 'root',
+    password: '', 
+    database: 'restaurante_db'
 });
 
-db.getConnection((err, connection) => {
+db.connect((err) => {
     if (err) {
-        console.error('Error conectando a la base de datos:', err);
-        return;
+        console.error('Error al conectar a la Base de Datos:', err);
+    } else {
+        console.log('Conectado a la Base de Datos MySQL');
     }
-    console.log('¡Conectado exitosamente al Pool de MySQL!');
-    
-    // Aseguramos que existan las columnas sin detener el servidor si ya existen
-    connection.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", () => {});
-    connection.query("ALTER TABLE insumos ADD COLUMN stock_minimo DECIMAL(10,2) DEFAULT 5", () => {});
-    
-    // Modificamos la columna para que acepte el texto de los pedidos a domicilio
-    connection.query("ALTER TABLE ordenes MODIFY COLUMN numero_mesa VARCHAR(255)", () => {});
-    
-    connection.release();
 });
 
+// Ruta raíz
 app.get('/', (req, res) => {
-    res.send('API Backend La Escondida - Funcionando correctamente');
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ==========================================
-// --- RUTAS DE ÓRDENES, COCINA Y CAJA ---
-// ==========================================
+// 1. Obtener Platillos
+app.get('/api/platillos', (req, res) => {
+    const sql = "SELECT p.*, c.nombre as categoria FROM platillos p LEFT JOIN categorias c ON p.id_categoria = c.id_categoria";
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
 
+// 2. Obtener Órdenes con detalles completos
+app.get('/api/ordenes', (req, res) => {
+    const sql = `
+        SELECT o.id_orden, o.numero_mesa, o.total, o.estado, o.fecha,
+               d.id_detalle, d.id_producto, d.cantidad, d.precio_unitario, d.notas,
+               p.nombre as producto
+        FROM ordenes o
+        LEFT JOIN detalles_orden d ON o.id_orden = d.id_orden
+        LEFT JOIN platillos p ON d.id_producto = p.id_producto
+        ORDER BY o.fecha DESC
+    `;
+    
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        const ordenesMap = {};
+        results.forEach(row => {
+            if (!ordenesMap[row.id_orden]) {
+                ordenesMap[row.id_orden] = {
+                    id_orden: row.id_orden,
+                    numero_mesa: row.numero_mesa,
+                    total: row.total,
+                    estado: row.estado,
+                    fecha: row.fecha,
+                    detalles: []
+                };
+            }
+            if (row.id_detalle) {
+                ordenesMap[row.id_orden].detalles.push({
+                    id_detalle: row.id_detalle,
+                    id_producto: row.id_producto,
+                    producto: row.producto,
+                    cantidad: row.cantidad,
+                    precio_unitario: row.precio_unitario,
+                    notas: row.notas
+                });
+            }
+        });
+        
+        res.json(Object.values(ordenesMap));
+    });
+});
+
+// 3. Crear Nueva Orden (Registra id_producto correcto para ligarlo con inventario)
 app.post('/api/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 'Mesa 1';
     const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
@@ -54,7 +93,6 @@ app.post('/api/ordenes', (req, res) => {
         return res.status(400).json({ error: 'El carrito está vacío' });
     }
 
-    // Si no es un número de mesa común, asumimos que es pedido en línea / a domicilio
     const esNumeroMesa = !isNaN(mesaFinal) && !isNaN(parseFloat(mesaFinal));
     const estadoInicial = esNumeroMesa ? 'Pendiente' : 'A Domicilio';
 
@@ -63,12 +101,13 @@ app.post('/api/ordenes', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
 
         const id_orden = result.insertId;
+        
         const valoresDetalles = detallesEnviados.map(item => {
-            const prodId = parseInt(item.id_producto || item.id || item.producto_id);
-            const cant = parseInt(item.cantidad || item.cant || 1);
-            const precio = parseFloat(item.precio || item.precio_unitario || item.precioUnitario || 0);
+            const prodId = parseInt(item.id_producto || item.id);
+            const cant = parseInt(item.cantidad || 1);
+            const precio = parseFloat(item.precio || 0);
             const notas = item.nombre || null; 
-            return [id_orden, isNaN(prodId) ? 1 : prodId, cant, precio, notas];
+            return [id_orden, isNaN(prodId) ? null : prodId, cant, precio, notas];
         });
 
         const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
@@ -79,256 +118,53 @@ app.post('/api/ordenes', (req, res) => {
     });
 });
 
-app.get('/api/ordenes', (req, res) => {
-    db.query('SELECT * FROM ordenes ORDER BY id_orden DESC', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.get('/api/cocina', (req, res) => {
-    const sql = `
-        SELECT o.id_orden, o.numero_mesa, IFNULL(d.notas, p.nombre) AS nombre, d.cantidad 
-        FROM ordenes o
-        JOIN detalles_orden d ON o.id_orden = d.id_orden
-        JOIN productos p ON d.id_producto = p.id_producto
-        WHERE o.estado IN ('Pendiente', 'A Domicilio')
-        ORDER BY o.id_orden ASC
-    `;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.get('/api/ordenes/:id/detalles', (req, res) => {
+// 4. Cambiar estado a Entregado (Llamado desde Monitor de Cocina)
+app.put('/api/ordenes/:id/entregar', (req, res) => {
     const { id } = req.params;
-    const sql = `
-        SELECT 
-            d.cantidad, 
-            IFNULL(d.notas, p.nombre) AS nombre, 
-            d.precio_unitario
-        FROM detalles_orden d
-        LEFT JOIN productos p ON d.id_producto = p.id_producto
-        WHERE d.id_orden = ?
-    `;
-    db.query(sql, [id], (err, results) => {
+    const sql = "UPDATE ordenes SET estado = 'Entregado' WHERE id_orden = ?";
+    db.query(sql, [id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
+        res.json({ mensaje: 'Orden marcada como entregada' });
     });
 });
 
-app.put('/api/ordenes/:id/lista', (req, res) => {
-    const { id } = req.params;
-    db.query("UPDATE ordenes SET estado = 'Lista' WHERE id_orden = ?", [id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: `Orden ${id} marcada como Lista` });
-    });
-});
-
-// CAJA: Muestra órdenes en mesa Listas Y pedidos A Domicilio / Pendientes para cobro manual
-app.get('/api/caja', (req, res) => {
-    const sql = "SELECT * FROM ordenes WHERE estado IN ('Lista', 'A Domicilio', 'Pendiente') ORDER BY id_orden ASC";
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-// Cobro atómico con descuento de inventario unificado
+// 5. Cobrar y Descontar Stock de Inventario
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
-    const sqlUpdateEstado = "UPDATE ordenes SET estado = 'Pagada' WHERE id_orden = ? AND estado != 'Pagada'";
-    
-    db.query(sqlUpdateEstado, [id], (errUpd, resultUpd) => {
-        if (errUpd) return res.status(500).json({ error: errUpd.message });
-        
-        if (resultUpd.affectedRows === 0) {
-            return res.json({ mensaje: "Esta orden ya había sido cobrada anteriormente." });
-        }
+    const sqlPagar = "UPDATE ordenes SET estado = 'Pagado' WHERE id_orden = ?";
+    db.query(sqlPagar, [id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
 
-        const sqlDescuentoUnificado = `
-            UPDATE insumos i
-            JOIN (
-                SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) AS total_a_restar
-                FROM detalles_orden d
-                JOIN recetas r ON d.id_producto = r.id_producto
-                WHERE d.id_orden = ?
-                GROUP BY r.id_insumo
-            ) sub ON i.id_insumo = sub.id_insumo
-            SET i.cantidad_actual = i.cantidad_actual - sub.total_a_restar
+        const sqlInsumos = `
+            SELECT r.id_insumo, SUM(r.cantidad * d.cantidad) as total_a_descontar
+            FROM detalles_orden d
+            JOIN recetas r ON d.id_producto = r.id_producto
+            WHERE d.id_orden = ?
+            GROUP BY r.id_insumo
         `;
 
-        db.query(sqlDescuentoUnificado, [id], (errDescuento) => {
-            if (errDescuento) {
-                return res.status(500).json({ error: "Orden cobrada, pero falló el descuento de inventario: " + errDescuento.message });
+        db.query(sqlInsumos, [id], (errInsumos, insumos) => {
+            if (errInsumos) return res.status(500).json({ error: errInsumos.message });
+
+            if (insumos.length === 0) {
+                return res.json({ mensaje: 'Orden pagada (sin insumos configurados en recetas)' });
             }
 
-            res.json({ mensaje: `¡Orden #${id} cobrada exitosamente!` });
+            let procesados = 0;
+            insumos.forEach(item => {
+                const sqlDescontar = "UPDATE inventario SET stock = stock - ? WHERE id_insumo = ?";
+                db.query(sqlDescontar, [item.total_a_descontar, item.id_insumo], (errDesc) => {
+                    procesados++;
+                    if (procesados === insumos.length) {
+                        res.json({ mensaje: 'Orden pagada y stock de inventario descontado' });
+                    }
+                });
+            });
         });
     });
 });
 
-// ==========================================
-// --- RUTAS DE REPORTES Y VENTAS POR DÍA ---
-// ==========================================
-
-app.get('/api/reportes/ventas', (req, res) => {
-    const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results[0]);
-    });
-});
-
-app.get('/api/reportes/ventas/hoy', (req, res) => {
-    const sql = `
-        SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido 
-        FROM ordenes 
-        WHERE estado = 'Pagada' 
-          AND DATE(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) = DATE(CONVERT_TZ(NOW(), '+00:00', '-06:00'))
-    `;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results[0]);
-    });
-});
-
-app.get('/api/reportes/ventas/historial', (req, res) => {
-    const sql = `
-        SELECT DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d') as fecha, 
-               COUNT(id_orden) as total_ordenes, 
-               COALESCE(SUM(total), 0) as total_vendido
-        FROM ordenes
-        WHERE estado = 'Pagada'
-        GROUP BY DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d')
-        ORDER BY fecha DESC
-    `;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-// ==========================================
-// --- RUTAS DE PRODUCTOS, INSUMOS Y RECETAS ---
-// ==========================================
-
-app.get('/api/productos', (req, res) => {
-    db.query('SELECT * FROM productos WHERE disponible = 1', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.post('/api/productos', (req, res) => {
-    const { nombre, precio } = req.body;
-    db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' });
-    });
-});
-
-app.delete('/api/productos/:id', (req, res) => {
-    const { id } = req.params;
-    db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' });
-    });
-});
-
-app.get('/api/insumos', (req, res) => {
-    db.query('SELECT * FROM insumos ORDER BY nombre ASC', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.post('/api/insumos', (req, res) => {
-    const { nombre, cantidad_actual } = req.body;
-    db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' });
-    });
-});
-
-app.put('/api/insumos/:id/stock', (req, res) => {
-    const { id } = req.params;
-    const { cantidad_agregar } = req.body;
-    
-    const cambio = parseFloat(cantidad_agregar);
-    if (isNaN(cambio)) {
-        return res.status(400).json({ error: 'Cantidad no válida' });
-    }
-
-    const sql = 'UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?';
-    db.query(sql, [cambio, id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Stock actualizado con éxito' });
-    });
-});
-
-app.put('/api/insumos/:id/minimo', (req, res) => {
-    const { id } = req.params;
-    const { stock_minimo } = req.body;
-    
-    const minimo = parseFloat(stock_minimo);
-    if (isNaN(minimo)) {
-        return res.status(400).json({ error: 'Cantidad no válida' });
-    }
-
-    const sql = 'UPDATE insumos SET stock_minimo = ? WHERE id_insumo = ?';
-    db.query(sql, [minimo, id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Stock mínimo actualizado con éxito' });
-    });
-});
-
-app.get('/api/recetas', (req, res) => {
-    const sql = `
-        SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida 
-        FROM recetas r
-        JOIN productos p ON r.id_producto = p.id_producto
-        JOIN insumos i ON r.id_insumo = i.id_insumo
-        ORDER BY p.nombre ASC
-    `;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.post('/api/recetas', (req, res) => {
-    const { id_producto, id_insumo, cantidad_requerida } = req.body;
-    db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?)', 
-    [id_producto, id_insumo, cantidad_requerida], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' });
-    });
-});
-
-app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
-    const { id_producto, id_insumo } = req.params;
-    db.query('DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?', [id_producto, id_insumo], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Ok' });
-    });
-});
-
-app.get('/api/alertas/inventario', (req, res) => {
-    const sql = `
-        SELECT nombre, cantidad_actual, stock_minimo 
-        FROM insumos 
-        WHERE cantidad_actual <= stock_minimo
-    `;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor corriendo en el puerto ${PORT}`);
+    console.log(`Servidor activo en http://localhost:${PORT}`);
 });

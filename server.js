@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Configuración de la conexión a MySQL
+// Configuración de la Base de Datos
 const db = mysql.createConnection({
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
@@ -20,29 +20,32 @@ const db = mysql.createConnection({
 
 db.connect((err) => {
     if (err) {
-        console.error('Error al conectar a la Base de Datos:', err);
+        console.error('Error de conexión a MySQL:', err);
     } else {
-        console.log('Conectado a la Base de Datos MySQL');
+        console.log('Conectado exitosamente a la Base de Datos MySQL');
     }
 });
 
-// Ruta raíz
+// Ruta principal
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // ==========================================
-// 1. SECCIÓN PRODUCTOS Y MENÚ
+// 1. PRODUCTOS (Coincide con tu fetch('/productos'))
 // ==========================================
-app.get('/api/productos', (req, res) => {
+app.get('/productos', (req, res) => {
     const sql = "SELECT * FROM productos";
     db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+            console.error("Error en SELECT /productos:", err);
+            return res.status(500).json({ error: err.message });
+        }
         res.json(results);
     });
 });
 
-app.post('/api/productos', (req, res) => {
+app.post('/productos', (req, res) => {
     const { nombre, precio } = req.body;
     const sql = "INSERT INTO productos (nombre, precio) VALUES (?, ?)";
     db.query(sql, [nombre, precio], (err, result) => {
@@ -51,7 +54,7 @@ app.post('/api/productos', (req, res) => {
     });
 });
 
-app.delete('/api/productos/:id', (req, res) => {
+app.delete('/productos/:id', (req, res) => {
     const { id } = req.params;
     const sql = "DELETE FROM productos WHERE id_producto = ?";
     db.query(sql, [id], (err) => {
@@ -61,9 +64,9 @@ app.delete('/api/productos/:id', (req, res) => {
 });
 
 // ==========================================
-// 2. SECCIÓN INSUMOS / INVENTARIO
+// 2. INSUMOS E INVENTARIO
 // ==========================================
-app.get('/api/insumos', (req, res) => {
+app.get('/insumos', (req, res) => {
     const sql = "SELECT * FROM insumos";
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -71,7 +74,7 @@ app.get('/api/insumos', (req, res) => {
     });
 });
 
-app.post('/api/insumos', (req, res) => {
+app.post('/insumos', (req, res) => {
     const { nombre, cantidad_actual } = req.body;
     const sql = "INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)";
     db.query(sql, [nombre, cantidad_actual || 0], (err, result) => {
@@ -80,7 +83,7 @@ app.post('/api/insumos', (req, res) => {
     });
 });
 
-app.put('/api/insumos/:id/stock', (req, res) => {
+app.put('/insumos/:id/stock', (req, res) => {
     const { id } = req.params;
     const { cantidad_agregar } = req.body;
     const sql = "UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?";
@@ -90,17 +93,7 @@ app.put('/api/insumos/:id/stock', (req, res) => {
     });
 });
 
-app.put('/api/insumos/:id/minimo', (req, res) => {
-    const { id } = req.params;
-    const { stock_minimo } = req.body;
-    const sql = "UPDATE insumos SET stock_minimo = ? WHERE id_insumo = ?";
-    db.query(sql, [stock_minimo, id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Mínimo actualizado' });
-    });
-});
-
-app.get('/api/alertas/inventario', (req, res) => {
+app.get('/alertas/inventario', (req, res) => {
     const sql = "SELECT * FROM insumos WHERE cantidad_actual <= stock_minimo";
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -109,9 +102,9 @@ app.get('/api/alertas/inventario', (req, res) => {
 });
 
 // ==========================================
-// 3. SECCIÓN RECETAS
+// 3. RECETAS
 // ==========================================
-app.get('/api/recetas', (req, res) => {
+app.get('/recetas', (req, res) => {
     const sql = `
         SELECT r.id_producto, r.id_insumo, r.cantidad_requerida,
                p.nombre as nombre_producto, i.nombre as nombre_insumo
@@ -125,7 +118,7 @@ app.get('/api/recetas', (req, res) => {
     });
 });
 
-app.post('/api/recetas', (req, res) => {
+app.post('/recetas', (req, res) => {
     const { id_producto, id_insumo, cantidad_requerida } = req.body;
     const sql = "INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?)";
     db.query(sql, [id_producto, id_insumo, cantidad_requerida], (err) => {
@@ -134,19 +127,10 @@ app.post('/api/recetas', (req, res) => {
     });
 });
 
-app.delete('/api/recetas/:id_prod/:id_insumo', (req, res) => {
-    const { id_prod, id_insumo } = req.params;
-    const sql = "DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?";
-    db.query(sql, [id_prod, id_insumo], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Receta desvinculada' });
-    });
-});
-
 // ==========================================
-// 4. SECCIÓN ÓRDENEN Y MONITOR DE COCINA
+// 4. ÓRDENEN Y MONITOR
 // ==========================================
-app.get('/api/ordenes', (req, res) => {
+app.get('/ordenes', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, o.total, o.estado, o.fecha,
                d.id_detalle, d.id_producto, d.cantidad, d.precio_unitario, d.notas,
@@ -156,7 +140,6 @@ app.get('/api/ordenes', (req, res) => {
         LEFT JOIN productos p ON d.id_producto = p.id_producto
         ORDER BY o.fecha DESC
     `;
-    
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         
@@ -183,12 +166,11 @@ app.get('/api/ordenes', (req, res) => {
                 });
             }
         });
-        
         res.json(Object.values(ordenesMap));
     });
 });
 
-app.post('/api/ordenes', (req, res) => {
+app.post('/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || 'Mesa 1';
     const detallesEnviados = req.body.detalles || req.body.carrito || [];
     const totalFinal = req.body.total || 0;
@@ -205,7 +187,6 @@ app.post('/api/ordenes', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
 
         const id_orden = result.insertId;
-        
         const valoresDetalles = detallesEnviados.map(item => {
             const prodId = parseInt(item.id_producto || item.id);
             const cant = parseInt(item.cantidad || 1);
@@ -222,19 +203,10 @@ app.post('/api/ordenes', (req, res) => {
     });
 });
 
-app.put('/api/ordenes/:id/entregar', (req, res) => {
-    const { id } = req.params;
-    const sql = "UPDATE ordenes SET estado = 'Entregado' WHERE id_orden = ?";
-    db.query(sql, [id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Orden marcada como entregada' });
-    });
-});
-
 // ==========================================
-// 5. CAJA Y PAGOS
+// 5. CAJA Y REPORTES
 // ==========================================
-app.get('/api/caja', (req, res) => {
+app.get('/caja', (req, res) => {
     const sql = "SELECT * FROM ordenes WHERE estado IN ('Pendiente', 'A Domicilio', 'Entregado') ORDER BY fecha ASC";
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -242,65 +214,16 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-app.put('/api/ordenes/:id/pagar', (req, res) => {
-    const { id } = req.params;
-
-    const sqlPagar = "UPDATE ordenes SET estado = 'Pagado' WHERE id_orden = ?";
-    db.query(sqlPagar, [id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-
-        const sqlInsumos = `
-            SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) as total_a_descontar
-            FROM detalles_orden d
-            JOIN recetas r ON d.id_producto = r.id_producto
-            WHERE d.id_orden = ?
-            GROUP BY r.id_insumo
-        `;
-
-        db.query(sqlInsumos, [id], (errInsumos, insumos) => {
-            if (errInsumos) return res.status(500).json({ error: errInsumos.message });
-
-            if (!insumos || insumos.length === 0) {
-                return res.json({ mensaje: 'Orden pagada (sin insumos configurados en recetas)' });
-            }
-
-            let procesados = 0;
-            insumos.forEach(item => {
-                const sqlDescontar = "UPDATE insumos SET cantidad_actual = cantidad_actual - ? WHERE id_insumo = ?";
-                db.query(sqlDescontar, [item.total_a_descontar, item.id_insumo], (errDesc) => {
-                    procesados++;
-                    if (procesados === insumos.length) {
-                        res.json({ mensaje: 'Orden pagada y stock de inventario descontado' });
-                    }
-                });
-            });
-        });
-    });
-});
-
-// ==========================================
-// 6. REPORTES DE VENTAS
-// ==========================================
-app.get('/api/reportes/ventas/hoy', (req, res) => {
-    const sql = `
-        SELECT COALESCE(SUM(total), 0) as total_vendido, COUNT(*) as total_ordenes 
-        FROM ordenes 
-        WHERE estado = 'Pagado' AND DATE(fecha) = CURDATE()
-    `;
+app.get('/reportes/ventas/hoy', (req, res) => {
+    const sql = "SELECT COALESCE(SUM(total), 0) as total_vendido, COUNT(*) as total_ordenes FROM ordenes WHERE estado = 'Pagado' AND DATE(fecha) = CURDATE()";
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results[0]);
     });
 });
 
-app.get('/api/reportes/ventas/historial', (req, res) => {
-    const sql = `
-        SELECT DATE_FORMAT(fecha, '%Y-%m-%d') as fecha, COUNT(*) as total_ordenes, SUM(total) as total_vendido 
-        FROM ordenes 
-        WHERE estado = 'Pagado' AND DATE(fecha) < CURDATE()
-        GROUP BY DATE(fecha) 
-        ORDER BY fecha DESC
-    `;
+app.get('/reportes/ventas/historial', (req, res) => {
+    const sql = "SELECT DATE_FORMAT(fecha, '%Y-%m-%d') as fecha, COUNT(*) as total_ordenes, SUM(total) as total_vendido FROM ordenes WHERE estado = 'Pagado' AND DATE(fecha) < CURDATE() GROUP BY DATE(fecha) ORDER BY fecha DESC";
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
@@ -308,5 +231,5 @@ app.get('/api/reportes/ventas/historial', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor activo en puerto ${PORT}`);
+    console.log(`Servidor activo en el puerto ${PORT}`);
 });

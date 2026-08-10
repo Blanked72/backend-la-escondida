@@ -6,24 +6,41 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Configuración de base de datos con Pool de reconexión
 const db = mysql.createPool({
     host: process.env.DB_HOST || 'db-mysql-fra1-04987-do-user-18482436-0.c.db.ondigitalocean.com',
     user: process.env.DB_USER || 'doadmin',
-    password: process.env.DB_PASSWORD,
+    password: process.env.DB_PASSWORD || 'AVNS_AXY807GPv_BP8_8m1V3',
     database: process.env.DB_NAME || 'defaultdb',
     port: process.env.DB_PORT || 25060,
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false },
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 });
 
-// Obtener catálogo de productos
+// Prueba de conexión
+db.getConnection((err, conn) => {
+    if (err) {
+        console.error('❌ Error crítico al conectar a MySQL:', err.message);
+    } else {
+        console.log('✅ Conexión exitosa a la Base de Datos');
+        conn.release();
+    }
+});
+
+// 1. Obtener catálogo de productos
 app.get('/api/productos', (req, res) => {
     db.query('SELECT * FROM productos', (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+            console.error('Error en /api/productos:', err.message);
+            return res.status(500).json({ error: err.message });
+        }
         res.json(results);
     });
 });
 
-// Crear nueva orden (Estado inicial: Pendiente)
+// 2. Crear nueva orden (Estado inicial: Pendiente)
 app.post('/api/ordenes', (req, res) => {
     const { numero_mesa, detalles, total } = req.body;
     const sqlOrden = 'INSERT INTO ordenes (numero_mesa, total, estado, fecha) VALUES (?, ?, "Pendiente", NOW())';
@@ -37,12 +54,12 @@ app.post('/api/ordenes', (req, res) => {
 
         db.query(sqlDetalles, [values], (errDet) => {
             if (errDet) return res.status(500).json({ error: errDet.message });
-            res.json({ message: 'Orden enviada a cocina con éxito', id_orden });
+            res.json({ message: 'Orden enviada con éxito', id_orden });
         });
     });
 });
 
-// Obtener todas las órdenes activas del día
+// 3. Obtener órdenes activas
 app.get('/api/ordenes', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, o.total, o.estado, o.fecha,
@@ -62,7 +79,7 @@ app.get('/api/ordenes', (req, res) => {
     });
 });
 
-// CAJA: Muestra unicamente las órdenes entregadas por cocina
+// 4. Módulo de Caja
 app.get('/api/caja', (req, res) => {
     const sql = "SELECT * FROM ordenes WHERE estado = 'Entregado' AND DATE(fecha) = CURDATE() ORDER BY id_orden DESC";
     db.query(sql, (err, results) => {
@@ -71,23 +88,23 @@ app.get('/api/caja', (req, res) => {
     });
 });
 
-// Cambiar estado a Entregado (Cocina -> Caja)
+// 5. Cambiar estado a Entregado (Cocina -> Caja)
 app.put('/api/ordenes/:id/entregar', (req, res) => {
     db.query("UPDATE ordenes SET estado = 'Entregado' WHERE id_orden = ?", [req.params.id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Orden marcada como lista' });
+        res.json({ message: 'Orden lista' });
     });
 });
 
-// Cambiar estado a Pagado (Caja)
+// 6. Cambiar estado a Pagado (Caja)
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     db.query("UPDATE ordenes SET estado = 'Pagado' WHERE id_orden = ?", [req.params.id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: 'Orden cobrada con éxito' });
+        res.json({ message: 'Orden pagada' });
     });
 });
 
-// Reporte de Ventas de Hoy
+// 7. Reporte de Ventas de Hoy
 app.get('/api/reportes/ventas/hoy', (req, res) => {
     const sql = "SELECT COUNT(*) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagado' AND DATE(fecha) = CURDATE()";
     db.query(sql, (err, results) => {
@@ -96,7 +113,7 @@ app.get('/api/reportes/ventas/hoy', (req, res) => {
     });
 });
 
-// Reporte de Ventas Histórico Agrupado por Día
+// 8. Reporte de Ventas Histórico
 app.get('/api/reportes/ventas/historial', (req, res) => {
     const sql = "SELECT DATE(fecha) AS fecha, COUNT(*) AS total_ordenes, SUM(total) AS total_vendido FROM ordenes WHERE estado = 'Pagado' GROUP BY DATE(fecha) ORDER BY fecha DESC";
     db.query(sql, (err, results) => {

@@ -31,7 +31,7 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", () => {});
     connection.query("ALTER TABLE insumos ADD COLUMN stock_minimo DECIMAL(10,2) DEFAULT 5", () => {});
     
-    // NUEVA LÍNEA: Modificamos la columna para que acepte el texto de los pedidos a domicilio
+    // Modificamos la columna para que acepte el texto de los pedidos a domicilio
     connection.query("ALTER TABLE ordenes MODIFY COLUMN numero_mesa VARCHAR(255)", () => {});
     
     connection.release();
@@ -46,7 +46,7 @@ app.get('/', (req, res) => {
 // ==========================================
 
 app.post('/api/ordenes', (req, res) => {
-    const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
+    const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 'Mesa 1';
     const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
     const totalFinal = req.body.total || 0;
 
@@ -54,8 +54,12 @@ app.post('/api/ordenes', (req, res) => {
         return res.status(400).json({ error: 'El carrito está vacío' });
     }
 
-    const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
-    db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
+    // Si no es un número de mesa común, asumimos que es pedido en línea / a domicilio
+    const esNumeroMesa = !isNaN(mesaFinal) && !isNaN(parseFloat(mesaFinal));
+    const estadoInicial = esNumeroMesa ? 'Pendiente' : 'A Domicilio';
+
+    const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, ?)";
+    db.query(sqlOrden, [mesaFinal, totalFinal, estadoInicial], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
 
         const id_orden = result.insertId;
@@ -88,7 +92,7 @@ app.get('/api/cocina', (req, res) => {
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
         JOIN productos p ON d.id_producto = p.id_producto
-        WHERE o.estado = 'Pendiente'
+        WHERE o.estado IN ('Pendiente', 'A Domicilio')
         ORDER BY o.id_orden ASC
     `;
     db.query(sql, (err, results) => {
@@ -97,9 +101,6 @@ app.get('/api/cocina', (req, res) => {
     });
 });
 
-// ==========================================
-// --- NUEVA RUTA PARA EL MESERO (DETALLES) ---
-// ==========================================
 app.get('/api/ordenes/:id/detalles', (req, res) => {
     const { id } = req.params;
     const sql = `
@@ -125,8 +126,10 @@ app.put('/api/ordenes/:id/lista', (req, res) => {
     });
 });
 
+// CAJA: Muestra órdenes en mesa Listas Y pedidos A Domicilio / Pendientes para cobro manual
 app.get('/api/caja', (req, res) => {
-    db.query("SELECT * FROM ordenes WHERE estado = 'Lista' ORDER BY id_orden ASC", (err, results) => {
+    const sql = "SELECT * FROM ordenes WHERE estado IN ('Lista', 'A Domicilio', 'Pendiente') ORDER BY id_orden ASC";
+    db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
@@ -171,7 +174,6 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
 // --- RUTAS DE REPORTES Y VENTAS POR DÍA ---
 // ==========================================
 
-// Reporte acumulado general
 app.get('/api/reportes/ventas', (req, res) => {
     const sql = `SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido FROM ordenes WHERE estado = 'Pagada'`;
     db.query(sql, (err, results) => {
@@ -180,7 +182,6 @@ app.get('/api/reportes/ventas', (req, res) => {
     });
 });
 
-// Reporte del día actual con ajuste de zona horaria (-06:00)
 app.get('/api/reportes/ventas/hoy', (req, res) => {
     const sql = `
         SELECT COUNT(id_orden) AS total_ordenes, COALESCE(SUM(total), 0) AS total_vendido 
@@ -194,7 +195,6 @@ app.get('/api/reportes/ventas/hoy', (req, res) => {
     });
 });
 
-// Historial de ventas agrupado por cada día de trabajo
 app.get('/api/reportes/ventas/historial', (req, res) => {
     const sql = `
         SELECT DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d') as fecha, 
@@ -269,7 +269,6 @@ app.put('/api/insumos/:id/stock', (req, res) => {
     });
 });
 
-// NUEVA RUTA: Actualizar el stock mínimo de un insumo
 app.put('/api/insumos/:id/minimo', (req, res) => {
     const { id } = req.params;
     const { stock_minimo } = req.body;
@@ -317,12 +316,7 @@ app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
     });
 });
 
-// ==========================================
-// --- RUTA PARA ALERTAS DE INVENTARIO ---
-// ==========================================
-
 app.get('/api/alertas/inventario', (req, res) => {
-    // Compara el stock actual vs el mínimo establecido en la BD
     const sql = `
         SELECT nombre, cantidad_actual, stock_minimo 
         FROM insumos 

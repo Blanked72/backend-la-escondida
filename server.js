@@ -94,6 +94,26 @@ app.get('/api/cocina', (req, res) => {
     });
 });
 
+// ==========================================
+// --- NUEVA RUTA PARA EL MESERO (DETALLES) ---
+// ==========================================
+app.get('/api/ordenes/:id/detalles', (req, res) => {
+    const { id } = req.params;
+    const sql = `
+        SELECT 
+            d.cantidad, 
+            IFNULL(d.notas, p.nombre) AS nombre, 
+            d.precio_unitario
+        FROM detalles_orden d
+        LEFT JOIN productos p ON d.id_producto = p.id_producto
+        WHERE d.id_orden = ?
+    `;
+    db.query(sql, [id], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
 app.put('/api/ordenes/:id/lista', (req, res) => {
     const { id } = req.params;
     db.query("UPDATE ordenes SET estado = 'Lista' WHERE id_orden = ?", [id], (err) => {

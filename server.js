@@ -31,6 +31,9 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", () => {});
     connection.query("ALTER TABLE insumos ADD COLUMN stock_minimo DECIMAL(10,2) DEFAULT 5", () => {});
     
+    // NUEVA LÍNEA: Modificamos la columna para que acepte el texto de los pedidos a domicilio
+    connection.query("ALTER TABLE ordenes MODIFY COLUMN numero_mesa VARCHAR(255)", () => {});
+    
     connection.release();
 });
 

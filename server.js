@@ -9,11 +9,11 @@ app.use(express.json());
 
 // Pool de conexiones a MySQL (Aiven Cloud)
 const db = mysql.createPool({
-    host: 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
-    port: 28686,
-    user: 'avnadmin',
-    password: 'AVNS_AXY807GPv_BP8_8m1V3',
-    database: 'defaultdb',
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
     ssl: { rejectUnauthorized: false },
     waitForConnections: true,
     connectionLimit: 10,

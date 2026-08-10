@@ -1,6 +1,5 @@
 const express = require('express');
 const mysql = require('mysql2');
-const path = require('path');
 const cors = require('cors');
 
 const app = express();
@@ -8,56 +7,45 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
 
-// Configuración de la Base de Datos
+// Conexión a Aiven.io mediante variables de entorno o credenciales directas
 const db = mysql.createConnection({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '', 
-    database: process.env.DB_NAME || 'restaurante_db'
+    host: process.env.DB_HOST || 'mysql-3b6d18b2-atoblanked2026.g.aivencloud.com',
+    user: process.env.DB_USER || 'avnadmin',
+    password: process.env.DB_PASSWORD, // Configura DB_PASSWORD en el panel de Render
+    database: process.env.DB_NAME || 'defaultdb',
+    port: process.env.DB_PORT || 28686,
+    ssl: { rejectUnauthorized: false }
 });
 
 db.connect((err) => {
     if (err) {
-        console.error('Error de conexión a MySQL:', err);
+        console.error('Error de conexión a la Base de Datos en Aiven:', err);
     } else {
         console.log('Conectado exitosamente a la Base de Datos MySQL');
     }
 });
 
-// Ruta principal
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
 // ==========================================
-// 1. PRODUCTOS (Coincide con tu fetch('/productos'))
+// 1. PRODUCTOS
 // ==========================================
 app.get('/productos', (req, res) => {
-    const sql = "SELECT * FROM productos";
-    db.query(sql, (err, results) => {
-        if (err) {
-            console.error("Error en SELECT /productos:", err);
-            return res.status(500).json({ error: err.message });
-        }
+    db.query("SELECT * FROM productos", (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
 });
 
 app.post('/productos', (req, res) => {
     const { nombre, precio } = req.body;
-    const sql = "INSERT INTO productos (nombre, precio) VALUES (?, ?)";
-    db.query(sql, [nombre, precio], (err, result) => {
+    db.query("INSERT INTO productos (nombre, precio) VALUES (?, ?)", [nombre, precio], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Producto agregado', id_producto: result.insertId });
     });
 });
 
 app.delete('/productos/:id', (req, res) => {
-    const { id } = req.params;
-    const sql = "DELETE FROM productos WHERE id_producto = ?";
-    db.query(sql, [id], (err) => {
+    db.query("DELETE FROM productos WHERE id_producto = ?", [req.params.id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Producto eliminado' });
     });
@@ -67,68 +55,21 @@ app.delete('/productos/:id', (req, res) => {
 // 2. INSUMOS E INVENTARIO
 // ==========================================
 app.get('/insumos', (req, res) => {
-    const sql = "SELECT * FROM insumos";
-    db.query(sql, (err, results) => {
+    db.query("SELECT * FROM insumos", (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
-    });
-});
-
-app.post('/insumos', (req, res) => {
-    const { nombre, cantidad_actual } = req.body;
-    const sql = "INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)";
-    db.query(sql, [nombre, cantidad_actual || 0], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Insumo agregado', id_insumo: result.insertId });
-    });
-});
-
-app.put('/insumos/:id/stock', (req, res) => {
-    const { id } = req.params;
-    const { cantidad_agregar } = req.body;
-    const sql = "UPDATE insumos SET cantidad_actual = cantidad_actual + ? WHERE id_insumo = ?";
-    db.query(sql, [cantidad_agregar, id], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Stock actualizado' });
     });
 });
 
 app.get('/alertas/inventario', (req, res) => {
-    const sql = "SELECT * FROM insumos WHERE cantidad_actual <= stock_minimo";
-    db.query(sql, (err, results) => {
+    db.query("SELECT * FROM insumos WHERE cantidad_actual <= stock_minimo", (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
 });
 
 // ==========================================
-// 3. RECETAS
-// ==========================================
-app.get('/recetas', (req, res) => {
-    const sql = `
-        SELECT r.id_producto, r.id_insumo, r.cantidad_requerida,
-               p.nombre as nombre_producto, i.nombre as nombre_insumo
-        FROM recetas r
-        JOIN productos p ON r.id_producto = p.id_producto
-        JOIN insumos i ON r.id_insumo = i.id_insumo
-    `;
-    db.query(sql, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
-});
-
-app.post('/recetas', (req, res) => {
-    const { id_producto, id_insumo, cantidad_requerida } = req.body;
-    const sql = "INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?)";
-    db.query(sql, [id_producto, id_insumo, cantidad_requerida], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ mensaje: 'Receta vinculada correctamente' });
-    });
-});
-
-// ==========================================
-// 4. ÓRDENEN Y MONITOR
+// 3. ÓRDENEN
 // ==========================================
 app.get('/ordenes', (req, res) => {
     const sql = `
@@ -171,44 +112,32 @@ app.get('/ordenes', (req, res) => {
 });
 
 app.post('/ordenes', (req, res) => {
-    const mesaFinal = req.body.numero_mesa || req.body.mesa || 'Mesa 1';
-    const detallesEnviados = req.body.detalles || req.body.carrito || [];
-    const totalFinal = req.body.total || 0;
-
-    if (!Array.isArray(detallesEnviados) || detallesEnviados.length === 0) {
-        return res.status(400).json({ error: 'El carrito está vacío' });
+    const { numero_mesa, total, detalles } = req.body;
+    
+    if (!detalles || detalles.length === 0) {
+        return res.status(400).json({ error: 'La orden está vacía' });
     }
 
-    const esNumeroMesa = !isNaN(mesaFinal) && !isNaN(parseFloat(mesaFinal));
-    const estadoInicial = esNumeroMesa ? 'Pendiente' : 'A Domicilio';
-
-    const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado, fecha) VALUES (?, ?, ?, NOW())";
-    db.query(sqlOrden, [mesaFinal, totalFinal, estadoInicial], (err, result) => {
+    const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado, fecha) VALUES (?, ?, 'Pendiente', NOW())";
+    db.query(sqlOrden, [numero_mesa || 'Mesa 1', total || 0], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
 
         const id_orden = result.insertId;
-        const valoresDetalles = detallesEnviados.map(item => {
-            const prodId = parseInt(item.id_producto || item.id);
-            const cant = parseInt(item.cantidad || 1);
-            const precio = parseFloat(item.precio || 0);
-            const notas = item.nombre || null; 
-            return [id_orden, isNaN(prodId) ? null : prodId, cant, precio, notas];
-        });
+        const valores = detalles.map(item => [id_orden, item.id_producto, item.cantidad, item.precio, item.nombre]);
 
-        const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
-        db.query(sqlDetalles, [valoresDetalles], (errDetalles) => {
-            if (errDetalles) return res.status(500).json({ error: errDetalles.message });
-            res.json({ mensaje: '¡Orden creada con éxito!', id_orden });
+        const sqlDetalles = "INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?";
+        db.query(sqlDetalles, [valores], (errDet) => {
+            if (errDet) return res.status(500).json({ error: errDet.message });
+            res.json({ mensaje: 'Orden enviada correctamente', id_orden });
         });
     });
 });
 
 // ==========================================
-// 5. CAJA Y REPORTES
+// 4. CAJA Y REPORTES
 // ==========================================
 app.get('/caja', (req, res) => {
-    const sql = "SELECT * FROM ordenes WHERE estado IN ('Pendiente', 'A Domicilio', 'Entregado') ORDER BY fecha ASC";
-    db.query(sql, (err, results) => {
+    db.query("SELECT * FROM ordenes WHERE estado IN ('Pendiente', 'Entregado') ORDER BY fecha ASC", (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
@@ -231,5 +160,5 @@ app.get('/reportes/ventas/historial', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor activo en el puerto ${PORT}`);
+    console.log(`Servidor escuchando en puerto ${PORT}`);
 });

@@ -45,29 +45,53 @@ app.get('/', (req, res) => {
 app.post('/api/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
     const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
-    const totalFinal = req.body.total || 0;
 
     if (!Array.isArray(detallesEnviados) || detallesEnviados.length === 0) {
         return res.status(400).json({ error: 'El carrito está vacío' });
     }
 
-    const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
-    db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
+    const itemsCarrito = detallesEnviados.map(item => {
+        const prodIdCrudo = parseInt(item.id_producto || item.id || item.producto_id);
+        return {
+            prodId: isNaN(prodIdCrudo) ? 1 : prodIdCrudo,
+            cant: parseInt(item.cantidad || item.cant || 1),
+            nombre: item.nombre || null
+        };
+    });
 
-        const id_orden = result.insertId;
-        const valoresDetalles = detallesEnviados.map(item => {
-            const prodId = parseInt(item.id_producto || item.id || item.producto_id);
-            const cant = parseInt(item.cantidad || item.cant || 1);
-            const precio = parseFloat(item.precio || item.precio_unitario || item.precioUnitario || 0);
-            const notas = item.nombre || null; 
-            return [id_orden, isNaN(prodId) ? 1 : prodId, cant, precio, notas];
+    const idsProductos = [...new Set(itemsCarrito.map(i => i.prodId))];
+
+    // Ignoramos el precio enviado por el cliente: lo tomamos siempre de la BD
+    db.query('SELECT id_producto, precio FROM productos WHERE id_producto IN (?) AND disponible = 1', [idsProductos], (errPrecios, productosDb) => {
+        if (errPrecios) return res.status(500).json({ error: errPrecios.message });
+
+        const preciosPorId = {};
+        productosDb.forEach(p => { preciosPorId[p.id_producto] = parseFloat(p.precio); });
+
+        const valoresDetalles = itemsCarrito.map(item => {
+            const precioReal = preciosPorId[item.prodId];
+            if (precioReal === undefined) return null;
+            return [item.prodId, item.cant, precioReal, item.nombre];
         });
 
-        const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
-        db.query(sqlDetalles, [valoresDetalles], (errDetalles) => {
-            if (errDetalles) return res.status(500).json({ error: errDetalles.message });
-            res.json({ mensaje: '¡Orden creada con éxito!', id_orden });
+        if (valoresDetalles.some(v => v === null)) {
+            return res.status(400).json({ error: 'Uno o más productos del carrito no existen o no están disponibles' });
+        }
+
+        const totalFinal = valoresDetalles.reduce((suma, [, cant, precio]) => suma + (cant * precio), 0);
+
+        const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
+        db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+
+            const id_orden = result.insertId;
+            const filasDetalles = valoresDetalles.map(([prodId, cant, precio, notas]) => [id_orden, prodId, cant, precio, notas]);
+
+            const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
+            db.query(sqlDetalles, [filasDetalles], (errDetalles) => {
+                if (errDetalles) return res.status(500).json({ error: errDetalles.message });
+                res.json({ mensaje: '¡Orden creada con éxito!', id_orden });
+            });
         });
     });
 });

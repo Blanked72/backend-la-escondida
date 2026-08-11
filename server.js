@@ -310,6 +310,27 @@ app.get('/api/reportes/ventas/historial', (req, res) => {
     });
 });
 
+// Comandas (órdenes pagadas) de un día específico, elegido por el usuario
+app.get('/api/reportes/ventas/comandas', (req, res) => {
+    const fecha = req.query.fecha;
+    if (!fecha) {
+        return res.status(400).json({ error: 'Falta el parámetro fecha (formato YYYY-MM-DD)' });
+    }
+
+    const sql = `
+        SELECT id_orden, numero_mesa, tipo_pedido, nombre_cliente, total,
+               DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%H:%i') AS hora
+        FROM ordenes
+        WHERE estado = 'Pagada'
+          AND DATE(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) = ?
+        ORDER BY fecha_creacion ASC
+    `;
+    db.query(sql, [fecha], (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
 // ==========================================
 // --- RUTAS DE PRODUCTOS, INSUMOS Y RECETAS ---
 // ==========================================

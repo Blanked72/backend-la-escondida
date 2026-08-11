@@ -31,6 +31,10 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", () => {});
     connection.query("ALTER TABLE insumos ADD COLUMN stock_minimo DECIMAL(10,2) DEFAULT 5", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN motivo_rechazo VARCHAR(255)", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN tipo_pedido VARCHAR(20) DEFAULT 'mesa'", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN nombre_cliente VARCHAR(100)", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN telefono VARCHAR(20)", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN direccion VARCHAR(255)", () => {});
     
     connection.release();
 });
@@ -46,9 +50,22 @@ app.get('/', (req, res) => {
 app.post('/api/ordenes', (req, res) => {
     const mesaFinal = req.body.numero_mesa || req.body.mesa || req.body.numMesa || 1;
     const detallesEnviados = req.body.detalles || req.body.productos || req.body.carrito || [];
+    const tipoPedido = req.body.tipo_pedido || 'mesa';
+    const nombreCliente = req.body.nombre_cliente || null;
+    const telefono = req.body.telefono || null;
+    const direccion = req.body.direccion || null;
 
     if (!Array.isArray(detallesEnviados) || detallesEnviados.length === 0) {
         return res.status(400).json({ error: 'El carrito está vacío' });
+    }
+
+    if (tipoPedido !== 'mesa') {
+        if (!nombreCliente || !telefono) {
+            return res.status(400).json({ error: 'Nombre y teléfono son obligatorios para pedidos en línea' });
+        }
+        if (tipoPedido === 'domicilio' && !direccion) {
+            return res.status(400).json({ error: 'La dirección es obligatoria para pedidos a domicilio' });
+        }
     }
 
     const itemsCarrito = detallesEnviados.map(item => {
@@ -80,9 +97,10 @@ app.post('/api/ordenes', (req, res) => {
         }
 
         const totalFinal = valoresDetalles.reduce((suma, [, cant, precio]) => suma + (cant * precio), 0);
+        const mesaParaGuardar = tipoPedido === 'mesa' ? mesaFinal : 0;
 
-        const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado) VALUES (?, ?, 'Pendiente')";
-        db.query(sqlOrden, [mesaFinal, totalFinal], (err, result) => {
+        const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado, tipo_pedido, nombre_cliente, telefono, direccion) VALUES (?, ?, 'Pendiente', ?, ?, ?, ?)";
+        db.query(sqlOrden, [mesaParaGuardar, totalFinal, tipoPedido, nombreCliente, telefono, direccion], (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
 
             const id_orden = result.insertId;
@@ -106,7 +124,8 @@ app.get('/api/ordenes', (req, res) => {
 
 app.get('/api/cocina', (req, res) => {
     const sql = `
-        SELECT o.id_orden, o.numero_mesa, IFNULL(d.notas, p.nombre) AS nombre, d.cantidad 
+        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
+               IFNULL(d.notas, p.nombre) AS nombre, d.cantidad 
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
         JOIN productos p ON d.id_producto = p.id_producto
@@ -173,6 +192,24 @@ app.put('/api/ordenes/:id/rechazar', (req, res) => {
             res.json({ mensaje: `Orden ${id} rechazada` });
         }
     );
+});
+
+// Vista de solo lectura para el mesero: todo el ciclo activo de una orden
+app.get('/api/mesero', (req, res) => {
+    const sql = `
+        SELECT o.id_orden, o.numero_mesa, o.estado, o.total, o.motivo_rechazo,
+               o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
+               IFNULL(d.notas, p.nombre) AS nombre_producto, d.cantidad
+        FROM ordenes o
+        JOIN detalles_orden d ON o.id_orden = d.id_orden
+        JOIN productos p ON d.id_producto = p.id_producto
+        WHERE o.estado IN ('Pendiente', 'Lista', 'Rechazada')
+        ORDER BY o.id_orden ASC
+    `;
+    db.query(sql, (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
 });
 
 app.get('/api/caja', (req, res) => {

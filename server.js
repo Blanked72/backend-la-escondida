@@ -30,6 +30,7 @@ db.getConnection((err, connection) => {
     // Aseguramos que existan las columnas sin detener el servidor si ya existen
     connection.query("ALTER TABLE detalles_orden ADD COLUMN notas VARCHAR(255)", () => {});
     connection.query("ALTER TABLE insumos ADD COLUMN stock_minimo DECIMAL(10,2) DEFAULT 5", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN motivo_rechazo VARCHAR(255)", () => {});
     
     connection.release();
 });
@@ -157,10 +158,39 @@ app.put('/api/ordenes/:id/lista', (req, res) => {
     });
 });
 
+app.put('/api/ordenes/:id/rechazar', (req, res) => {
+    const { id } = req.params;
+    const motivo = req.body.motivo || 'Falta de insumo';
+
+    db.query(
+        "UPDATE ordenes SET estado = 'Rechazada', motivo_rechazo = ? WHERE id_orden = ? AND estado = 'Pendiente'",
+        [motivo, id],
+        (err, result) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (result.affectedRows === 0) {
+                return res.status(400).json({ error: 'La orden ya no está pendiente, no se pudo rechazar.' });
+            }
+            res.json({ mensaje: `Orden ${id} rechazada` });
+        }
+    );
+});
+
 app.get('/api/caja', (req, res) => {
-    db.query("SELECT * FROM ordenes WHERE estado = 'Lista' ORDER BY id_orden ASC", (err, results) => {
+    db.query("SELECT * FROM ordenes WHERE estado IN ('Lista', 'Rechazada') ORDER BY id_orden ASC", (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
+    });
+});
+
+// El mesero confirma que ya avisó al cliente que la orden fue rechazada
+app.put('/api/ordenes/:id/notificar-rechazo', (req, res) => {
+    const { id } = req.params;
+    db.query("UPDATE ordenes SET estado = 'Cancelada' WHERE id_orden = ? AND estado = 'Rechazada'", [id], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (result.affectedRows === 0) {
+            return res.status(400).json({ error: 'No se pudo actualizar la orden.' });
+        }
+        res.json({ mensaje: `Orden ${id} cerrada` });
     });
 });
 

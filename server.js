@@ -7,6 +7,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Contraseña única para proteger las acciones de administración.
+// Se recomienda configurar ADMIN_PASSWORD como variable de entorno en Render.
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'laescondida2026';
+
+function requiereAdmin(req, res, next) {
+    const password = req.header('x-admin-password');
+    if (password !== ADMIN_PASSWORD) {
+        return res.status(401).json({ error: 'No autorizado' });
+    }
+    next();
+}
+
 // Pool de conexiones a MySQL (Aiven Cloud)
 const db = mysql.createPool({
     host: process.env.DB_HOST,
@@ -41,6 +53,14 @@ db.getConnection((err, connection) => {
 
 app.get('/', (req, res) => {
     res.send('API Backend La Escondida - Funcionando correctamente');
+});
+
+app.post('/api/login', (req, res) => {
+    const { password } = req.body;
+    if (password === ADMIN_PASSWORD) {
+        return res.json({ ok: true });
+    }
+    res.status(401).json({ error: 'Contraseña incorrecta' });
 });
 
 // ==========================================
@@ -342,7 +362,15 @@ app.get('/api/productos', (req, res) => {
     });
 });
 
-app.post('/api/productos', (req, res) => {
+// Listado completo (incluye deshabilitados) para el panel de administración
+app.get('/api/productos/todos', requiereAdmin, (req, res) => {
+    db.query('SELECT * FROM productos ORDER BY nombre ASC', (err, results) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(results);
+    });
+});
+
+app.post('/api/productos', requiereAdmin, (req, res) => {
     const { nombre, precio } = req.body;
     db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -350,7 +378,16 @@ app.post('/api/productos', (req, res) => {
     });
 });
 
-app.delete('/api/productos/:id', (req, res) => {
+app.put('/api/productos/:id', requiereAdmin, (req, res) => {
+    const { id } = req.params;
+    const { nombre, precio } = req.body;
+    db.query('UPDATE productos SET nombre = ?, precio = ? WHERE id_producto = ?', [nombre, precio, id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ok' });
+    });
+});
+
+app.delete('/api/productos/:id', requiereAdmin, (req, res) => {
     const { id } = req.params;
     db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -365,7 +402,7 @@ app.get('/api/insumos', (req, res) => {
     });
 });
 
-app.post('/api/insumos', (req, res) => {
+app.post('/api/insumos', requiereAdmin, (req, res) => {
     const { nombre, cantidad_actual } = req.body;
     db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -373,7 +410,7 @@ app.post('/api/insumos', (req, res) => {
     });
 });
 
-app.put('/api/insumos/:id/stock', (req, res) => {
+app.put('/api/insumos/:id/stock', requiereAdmin, (req, res) => {
     const { id } = req.params;
     const { cantidad_agregar } = req.body;
     
@@ -390,7 +427,7 @@ app.put('/api/insumos/:id/stock', (req, res) => {
 });
 
 // NUEVA RUTA: Actualizar el stock mínimo de un insumo
-app.put('/api/insumos/:id/minimo', (req, res) => {
+app.put('/api/insumos/:id/minimo', requiereAdmin, (req, res) => {
     const { id } = req.params;
     const { stock_minimo } = req.body;
     
@@ -420,7 +457,7 @@ app.get('/api/recetas', (req, res) => {
     });
 });
 
-app.post('/api/recetas', (req, res) => {
+app.post('/api/recetas', requiereAdmin, (req, res) => {
     const { id_producto, id_insumo, cantidad_requerida } = req.body;
     db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?)', 
     [id_producto, id_insumo, cantidad_requerida], (err) => {
@@ -429,7 +466,7 @@ app.post('/api/recetas', (req, res) => {
     });
 });
 
-app.delete('/api/recetas/:id_producto/:id_insumo', (req, res) => {
+app.delete('/api/recetas/:id_producto/:id_insumo', requiereAdmin, (req, res) => {
     const { id_producto, id_insumo } = req.params;
     db.query('DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?', [id_producto, id_insumo], (err) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -451,6 +488,27 @@ app.get('/api/alertas/inventario', (req, res) => {
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
+    });
+});
+
+// Detalle completo de una orden (para imprimir ticket o ver comanda en reportes)
+app.get('/api/ordenes/:id/detalle', (req, res) => {
+    const { id } = req.params;
+
+    db.query('SELECT * FROM ordenes WHERE id_orden = ?', [id], (errOrden, ordenes) => {
+        if (errOrden) return res.status(500).json({ error: errOrden.message });
+        if (ordenes.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
+
+        const sqlItems = `
+            SELECT IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.precio_unitario
+            FROM detalles_orden d
+            JOIN productos p ON d.id_producto = p.id_producto
+            WHERE d.id_orden = ?
+        `;
+        db.query(sqlItems, [id], (errItems, items) => {
+            if (errItems) return res.status(500).json({ error: errItems.message });
+            res.json({ orden: ordenes[0], items });
+        });
     });
 });
 

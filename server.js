@@ -88,7 +88,7 @@ app.post('/api/ordenes', (req, res) => {
         }
     }
 
-    const itemsCarrito = detallesEnviados.map(item => {
+    const itemsCrudos = detallesEnviados.map(item => {
         const prodIdCrudo = parseInt(item.id_producto || item.id || item.producto_id);
         return {
             prodId: isNaN(prodIdCrudo) ? 1 : prodIdCrudo,
@@ -96,6 +96,16 @@ app.post('/api/ordenes', (req, res) => {
             nombre: item.nombre || null
         };
     });
+
+    // Agrupamos por producto: pedir 2 capuchinos por separado debe verse como una sola línea "2x Capuchino"
+    const agrupados = {};
+    itemsCrudos.forEach(item => {
+        if (!agrupados[item.prodId]) {
+            agrupados[item.prodId] = { prodId: item.prodId, cant: 0, nombre: item.nombre };
+        }
+        agrupados[item.prodId].cant += item.cant;
+    });
+    const itemsCarrito = Object.values(agrupados);
 
     const idsProductos = [...new Set(itemsCarrito.map(i => i.prodId))];
 

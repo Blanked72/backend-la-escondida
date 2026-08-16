@@ -55,6 +55,7 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE ordenes ADD COLUMN telefono VARCHAR(20)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN direccion VARCHAR(255)", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN categoria VARCHAR(50)", () => {});
+    connection.query("ALTER TABLE detalles_orden ADD COLUMN nota_personalizada VARCHAR(255)", () => {});
     
     connection.release();
 });
@@ -101,17 +102,20 @@ app.post('/api/ordenes', (req, res) => {
         return {
             prodId: isNaN(prodIdCrudo) ? 1 : prodIdCrudo,
             cant: parseInt(item.cantidad || item.cant || 1),
-            nombre: item.nombre || null
+            nombre: item.nombre || null,
+            nota: item.nota ? String(item.nota).trim().slice(0, 255) : null
         };
     });
 
-    // Agrupamos por producto: pedir 2 capuchinos por separado debe verse como una sola línea "2x Capuchino"
+    // Agrupamos por producto + nota: 2 capuchinos iguales se juntan en una sola línea,
+    // pero "capuchino sin azúcar" no se mezcla con "capuchino normal"
     const agrupados = {};
     itemsCrudos.forEach(item => {
-        if (!agrupados[item.prodId]) {
-            agrupados[item.prodId] = { prodId: item.prodId, cant: 0, nombre: item.nombre };
+        const clave = `${item.prodId}::${item.nota || ''}`;
+        if (!agrupados[clave]) {
+            agrupados[clave] = { prodId: item.prodId, cant: 0, nombre: item.nombre, nota: item.nota };
         }
-        agrupados[item.prodId].cant += item.cant;
+        agrupados[clave].cant += item.cant;
     });
     const itemsCarrito = Object.values(agrupados);
 
@@ -127,7 +131,7 @@ app.post('/api/ordenes', (req, res) => {
         const valoresDetalles = itemsCarrito.map(item => {
             const precioReal = preciosPorId[item.prodId];
             if (precioReal === undefined) return null;
-            return [item.prodId, item.cant, precioReal, item.nombre];
+            return [item.prodId, item.cant, precioReal, item.nombre, item.nota];
         });
 
         if (valoresDetalles.some(v => v === null)) {
@@ -142,9 +146,9 @@ app.post('/api/ordenes', (req, res) => {
             if (err) return res.status(500).json({ error: err.message });
 
             const id_orden = result.insertId;
-            const filasDetalles = valoresDetalles.map(([prodId, cant, precio, notas]) => [id_orden, prodId, cant, precio, notas]);
+            const filasDetalles = valoresDetalles.map(([prodId, cant, precio, notas, nota]) => [id_orden, prodId, cant, precio, notas, nota]);
 
-            const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas) VALUES ?';
+            const sqlDetalles = 'INSERT INTO detalles_orden (id_orden, id_producto, cantidad, precio_unitario, notas, nota_personalizada) VALUES ?';
             db.query(sqlDetalles, [filasDetalles], (errDetalles) => {
                 if (errDetalles) return res.status(500).json({ error: errDetalles.message });
                 res.json({ mensaje: '¡Orden creada con éxito!', id_orden });
@@ -163,7 +167,7 @@ app.get('/api/ordenes', (req, res) => {
 app.get('/api/cocina', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
-               IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, ${SQL_NUMERO_DIA}
+               IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.nota_personalizada AS nota, ${SQL_NUMERO_DIA}
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
         JOIN productos p ON d.id_producto = p.id_producto
@@ -237,7 +241,7 @@ app.get('/api/mesero', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, o.estado, o.total, o.motivo_rechazo,
                o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
-               IFNULL(d.notas, p.nombre) AS nombre_producto, d.cantidad, ${SQL_NUMERO_DIA}
+               IFNULL(d.notas, p.nombre) AS nombre_producto, d.cantidad, d.nota_personalizada AS nota, ${SQL_NUMERO_DIA}
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
         JOIN productos p ON d.id_producto = p.id_producto
@@ -521,7 +525,7 @@ app.get('/api/ordenes/:id/detalle', (req, res) => {
         if (ordenes.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
 
         const sqlItems = `
-            SELECT IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.precio_unitario
+            SELECT IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.precio_unitario, d.nota_personalizada AS nota
             FROM detalles_orden d
             JOIN productos p ON d.id_producto = p.id_producto
             WHERE d.id_orden = ?

@@ -19,6 +19,13 @@ function requiereAdmin(req, res, next) {
     next();
 }
 
+// Número de orden visible que se reinicia cada día (zona horaria -06:00), sin tocar el id_orden real
+const SQL_NUMERO_DIA = `(
+    SELECT COUNT(*) FROM ordenes o2
+    WHERE DATE(CONVERT_TZ(o2.fecha_creacion, '+00:00', '-06:00')) = DATE(CONVERT_TZ(o.fecha_creacion, '+00:00', '-06:00'))
+      AND o2.fecha_creacion <= o.fecha_creacion
+) AS numero_dia`;
+
 // Pool de conexiones a MySQL (Aiven Cloud)
 const db = mysql.createPool({
     host: process.env.DB_HOST,
@@ -47,6 +54,7 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE ordenes ADD COLUMN nombre_cliente VARCHAR(100)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN telefono VARCHAR(20)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN direccion VARCHAR(255)", () => {});
+    connection.query("ALTER TABLE productos ADD COLUMN categoria VARCHAR(50)", () => {});
     
     connection.release();
 });
@@ -155,7 +163,7 @@ app.get('/api/ordenes', (req, res) => {
 app.get('/api/cocina', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
-               IFNULL(d.notas, p.nombre) AS nombre, d.cantidad 
+               IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, ${SQL_NUMERO_DIA}
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
         JOIN productos p ON d.id_producto = p.id_producto
@@ -229,7 +237,7 @@ app.get('/api/mesero', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, o.estado, o.total, o.motivo_rechazo,
                o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
-               IFNULL(d.notas, p.nombre) AS nombre_producto, d.cantidad
+               IFNULL(d.notas, p.nombre) AS nombre_producto, d.cantidad, ${SQL_NUMERO_DIA}
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
         JOIN productos p ON d.id_producto = p.id_producto
@@ -243,7 +251,8 @@ app.get('/api/mesero', (req, res) => {
 });
 
 app.get('/api/caja', (req, res) => {
-    db.query("SELECT * FROM ordenes WHERE estado IN ('Lista', 'Rechazada') ORDER BY id_orden ASC", (err, results) => {
+    const sql = `SELECT o.*, ${SQL_NUMERO_DIA} FROM ordenes o WHERE o.estado IN ('Lista', 'Rechazada') ORDER BY o.id_orden ASC`;
+    db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });
@@ -348,12 +357,13 @@ app.get('/api/reportes/ventas/comandas', (req, res) => {
     }
 
     const sql = `
-        SELECT id_orden, numero_mesa, tipo_pedido, nombre_cliente, total,
-               DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%H:%i') AS hora
-        FROM ordenes
-        WHERE estado = 'Pagada'
-          AND DATE(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) = ?
-        ORDER BY fecha_creacion ASC
+        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.total,
+               DATE_FORMAT(CONVERT_TZ(o.fecha_creacion, '+00:00', '-06:00'), '%H:%i') AS hora,
+               ${SQL_NUMERO_DIA}
+        FROM ordenes o
+        WHERE o.estado = 'Pagada'
+          AND DATE(CONVERT_TZ(o.fecha_creacion, '+00:00', '-06:00')) = ?
+        ORDER BY o.fecha_creacion ASC
     `;
     db.query(sql, [fecha], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -381,8 +391,8 @@ app.get('/api/productos/todos', requiereAdmin, (req, res) => {
 });
 
 app.post('/api/productos', requiereAdmin, (req, res) => {
-    const { nombre, precio } = req.body;
-    db.query('INSERT INTO productos (nombre, precio, disponible) VALUES (?, ?, 1)', [nombre, precio], (err) => {
+    const { nombre, precio, categoria } = req.body;
+    db.query('INSERT INTO productos (nombre, precio, disponible, categoria) VALUES (?, ?, 1, ?)', [nombre, precio, categoria || null], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });
@@ -390,8 +400,8 @@ app.post('/api/productos', requiereAdmin, (req, res) => {
 
 app.put('/api/productos/:id', requiereAdmin, (req, res) => {
     const { id } = req.params;
-    const { nombre, precio } = req.body;
-    db.query('UPDATE productos SET nombre = ?, precio = ? WHERE id_producto = ?', [nombre, precio, id], (err) => {
+    const { nombre, precio, categoria } = req.body;
+    db.query('UPDATE productos SET nombre = ?, precio = ?, categoria = ? WHERE id_producto = ?', [nombre, precio, categoria || null, id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });
@@ -505,7 +515,8 @@ app.get('/api/alertas/inventario', (req, res) => {
 app.get('/api/ordenes/:id/detalle', (req, res) => {
     const { id } = req.params;
 
-    db.query('SELECT * FROM ordenes WHERE id_orden = ?', [id], (errOrden, ordenes) => {
+    const sqlOrden = `SELECT o.*, ${SQL_NUMERO_DIA} FROM ordenes o WHERE o.id_orden = ?`;
+    db.query(sqlOrden, [id], (errOrden, ordenes) => {
         if (errOrden) return res.status(500).json({ error: errOrden.message });
         if (ordenes.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
 

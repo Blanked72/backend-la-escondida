@@ -411,9 +411,11 @@ app.put('/api/productos/:id', requiereAdmin, (req, res) => {
     });
 });
 
-app.delete('/api/productos/:id', requiereAdmin, (req, res) => {
+// Habilita o deshabilita un producto (reversible, no se borra de la base de datos)
+app.put('/api/productos/:id/disponibilidad', requiereAdmin, (req, res) => {
     const { id } = req.params;
-    db.query('UPDATE productos SET disponible = 0 WHERE id_producto = ?', [id], (err) => {
+    const disponible = req.body.disponible ? 1 : 0;
+    db.query('UPDATE productos SET disponible = ? WHERE id_producto = ?', [disponible, id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });
@@ -430,6 +432,31 @@ app.post('/api/insumos', requiereAdmin, (req, res) => {
     const { nombre, cantidad_actual } = req.body;
     db.query('INSERT INTO insumos (nombre, cantidad_actual) VALUES (?, ?)', [nombre, cantidad_actual], (err) => {
         if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ok' });
+    });
+});
+
+app.put('/api/insumos/:id', requiereAdmin, (req, res) => {
+    const { id } = req.params;
+    const { nombre } = req.body;
+    if (!nombre || !nombre.trim()) {
+        return res.status(400).json({ error: 'El nombre no puede estar vacío' });
+    }
+    db.query('UPDATE insumos SET nombre = ? WHERE id_insumo = ?', [nombre.trim(), id], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ mensaje: 'Ok' });
+    });
+});
+
+app.delete('/api/insumos/:id', requiereAdmin, (req, res) => {
+    const { id } = req.params;
+    db.query('DELETE FROM insumos WHERE id_insumo = ?', [id], (err) => {
+        if (err) {
+            if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.code === 'ER_ROW_IS_REFERENCED') {
+                return res.status(400).json({ error: 'Este insumo está usado en una o más recetas. Quítalo de esas recetas primero.' });
+            }
+            return res.status(500).json({ error: err.message });
+        }
         res.json({ mensaje: 'Ok' });
     });
 });

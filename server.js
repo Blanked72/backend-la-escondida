@@ -336,12 +336,17 @@ app.get('/api/reportes/ventas/hoy', (req, res) => {
     });
 });
 
-// Historial de ventas agrupado por cada día de trabajo
+// Historial de ventas agrupado por cada día de trabajo, con desglose por turno
+// (Mañana: antes de las 17:00 / Tarde: desde las 17:00, hora local -06:00)
 app.get('/api/reportes/ventas/historial', (req, res) => {
     const sql = `
         SELECT DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d') as fecha, 
                COUNT(id_orden) as total_ordenes, 
-               COALESCE(SUM(total), 0) as total_vendido
+               COALESCE(SUM(total), 0) as total_vendido,
+               SUM(CASE WHEN TIME(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) < '17:00:00' THEN 1 ELSE 0 END) as ordenes_manana,
+               COALESCE(SUM(CASE WHEN TIME(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) < '17:00:00' THEN total ELSE 0 END), 0) as vendido_manana,
+               SUM(CASE WHEN TIME(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) >= '17:00:00' THEN 1 ELSE 0 END) as ordenes_tarde,
+               COALESCE(SUM(CASE WHEN TIME(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00')) >= '17:00:00' THEN total ELSE 0 END), 0) as vendido_tarde
         FROM ordenes
         WHERE estado = 'Pagada'
         GROUP BY DATE_FORMAT(CONVERT_TZ(fecha_creacion, '+00:00', '-06:00'), '%Y-%m-%d')

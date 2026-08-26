@@ -166,7 +166,7 @@ app.get('/api/ordenes', (req, res) => {
 
 app.get('/api/cocina', (req, res) => {
     const sql = `
-        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
+        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion, o.fecha_creacion,
                IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.nota_personalizada AS nota, ${SQL_NUMERO_DIA}
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden

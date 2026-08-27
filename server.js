@@ -55,6 +55,7 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE ordenes ADD COLUMN telefono VARCHAR(20)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN direccion VARCHAR(255)", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN categoria VARCHAR(50)", () => {});
+    connection.query("ALTER TABLE productos ADD COLUMN opciones VARCHAR(500)", () => {});
     connection.query("ALTER TABLE detalles_orden ADD COLUMN nota_personalizada VARCHAR(255)", () => {});
     
     connection.release();
@@ -400,8 +401,8 @@ app.get('/api/productos/todos', requiereAdmin, (req, res) => {
 });
 
 app.post('/api/productos', requiereAdmin, (req, res) => {
-    const { nombre, precio, categoria } = req.body;
-    db.query('INSERT INTO productos (nombre, precio, disponible, categoria) VALUES (?, ?, 1, ?)', [nombre, precio, categoria || null], (err) => {
+    const { nombre, precio, categoria, opciones } = req.body;
+    db.query('INSERT INTO productos (nombre, precio, disponible, categoria, opciones) VALUES (?, ?, 1, ?, ?)', [nombre, precio, categoria || null, opciones || null], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });
@@ -409,8 +410,8 @@ app.post('/api/productos', requiereAdmin, (req, res) => {
 
 app.put('/api/productos/:id', requiereAdmin, (req, res) => {
     const { id } = req.params;
-    const { nombre, precio, categoria } = req.body;
-    db.query('UPDATE productos SET nombre = ?, precio = ?, categoria = ? WHERE id_producto = ?', [nombre, precio, categoria || null, id], (err) => {
+    const { nombre, precio, categoria, opciones } = req.body;
+    db.query('UPDATE productos SET nombre = ?, precio = ?, categoria = ?, opciones = ? WHERE id_producto = ?', [nombre, precio, categoria || null, opciones || null, id], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });

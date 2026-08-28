@@ -464,6 +464,21 @@ app.put('/api/productos/:id/disponibilidad', requiereAdmin, (req, res) => {
     });
 });
 
+// Elimina un producto por completo. Si ya tiene ventas u recetas ligadas, se rechaza
+// (para no romper el historial de reportes) y se sugiere deshabilitarlo en su lugar.
+app.delete('/api/productos/:id', requiereAdmin, (req, res) => {
+    const { id } = req.params;
+    db.query('DELETE FROM productos WHERE id_producto = ?', [id], (err) => {
+        if (err) {
+            if (err.code === 'ER_ROW_IS_REFERENCED_2' || err.code === 'ER_ROW_IS_REFERENCED') {
+                return res.status(400).json({ error: 'Este producto ya tiene ventas u recetas registradas. Deshabilítalo en vez de eliminarlo, para no perder el historial.' });
+            }
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ mensaje: 'Ok' });
+    });
+});
+
 app.get('/api/insumos', (req, res) => {
     db.query('SELECT * FROM insumos ORDER BY nombre ASC', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });

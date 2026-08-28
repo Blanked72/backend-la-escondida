@@ -122,21 +122,45 @@ app.post('/api/ordenes', (req, res) => {
 
     const idsProductos = [...new Set(itemsCarrito.map(i => i.prodId))];
 
+    // Convierte "Nombre:Precio, Nombre, Nombre:Precio" en una lista de variantes.
+    // Si una variante no trae precio propio, usa el precio base del producto (ej. sabores de alitas).
+    function parsearOpciones(opcionesRaw, precioBase) {
+        return opcionesRaw.split(',').map(entrada => {
+            const partes = entrada.split(':');
+            const nombre = partes[0].trim();
+            const precio = partes.length > 1 ? parseFloat(partes[1]) : precioBase;
+            return { nombre, precio };
+        }).filter(v => v.nombre);
+    }
+
     // Ignoramos el precio enviado por el cliente: lo tomamos siempre de la BD
-    db.query('SELECT id_producto, precio FROM productos WHERE id_producto IN (?) AND disponible = 1', [idsProductos], (errPrecios, productosDb) => {
+    db.query('SELECT id_producto, precio, opciones FROM productos WHERE id_producto IN (?) AND disponible = 1', [idsProductos], (errPrecios, productosDb) => {
         if (errPrecios) return res.status(500).json({ error: errPrecios.message });
 
-        const preciosPorId = {};
-        productosDb.forEach(p => { preciosPorId[p.id_producto] = parseFloat(p.precio); });
+        const productosPorId = {};
+        productosDb.forEach(p => {
+            productosPorId[p.id_producto] = { precio: parseFloat(p.precio), opciones: p.opciones };
+        });
 
         const valoresDetalles = itemsCarrito.map(item => {
-            const precioReal = preciosPorId[item.prodId];
-            if (precioReal === undefined) return null;
+            const info = productosPorId[item.prodId];
+            if (!info) return null;
+
+            let precioReal = info.precio;
+
+            if (info.opciones && info.opciones.trim()) {
+                // Este producto tiene variantes: el cliente debió elegir una (viaja en "nota")
+                const variantes = parsearOpciones(info.opciones, info.precio);
+                const variante = variantes.find(v => v.nombre === item.nota);
+                if (!variante || isNaN(variante.precio)) return null;
+                precioReal = variante.precio;
+            }
+
             return [item.prodId, item.cant, precioReal, item.nombre, item.nota];
         });
 
         if (valoresDetalles.some(v => v === null)) {
-            return res.status(400).json({ error: 'Uno o más productos del carrito no existen o no están disponibles' });
+            return res.status(400).json({ error: 'Uno o más productos del carrito no existen, no están disponibles, o falta elegir una opción válida' });
         }
 
         const totalFinal = valoresDetalles.reduce((suma, [, cant, precio]) => suma + (cant * precio), 0);

@@ -56,6 +56,7 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE ordenes ADD COLUMN direccion VARCHAR(255)", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN categoria VARCHAR(50)", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN opciones VARCHAR(500)", () => {});
+    connection.query("ALTER TABLE recetas ADD COLUMN variante VARCHAR(100) DEFAULT NULL", () => {});
     connection.query("ALTER TABLE detalles_orden ADD COLUMN nota_personalizada VARCHAR(255)", () => {});
     
     connection.release();
@@ -213,6 +214,11 @@ app.get('/api/cocina', (req, res) => {
             SELECT d.id_orden, i.nombre AS insumo, i.cantidad_actual, SUM(r.cantidad_requerida * d.cantidad) AS total_requerido
             FROM detalles_orden d
             JOIN recetas r ON d.id_producto = r.id_producto
+                AND (
+                    r.variante IS NULL
+                    OR d.nota_personalizada = r.variante
+                    OR d.nota_personalizada LIKE CONCAT(r.variante, ' - %')
+                )
             JOIN insumos i ON r.id_insumo = i.id_insumo
             WHERE d.id_orden IN (?)
             GROUP BY d.id_orden, i.id_insumo, i.nombre, i.cantidad_actual
@@ -320,6 +326,11 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
                 SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) AS total_a_restar
                 FROM detalles_orden d
                 JOIN recetas r ON d.id_producto = r.id_producto
+                    AND (
+                        r.variante IS NULL
+                        OR d.nota_personalizada = r.variante
+                        OR d.nota_personalizada LIKE CONCAT(r.variante, ' - %')
+                    )
                 WHERE d.id_orden = ?
                 GROUP BY r.id_insumo
             ) sub ON i.id_insumo = sub.id_insumo
@@ -528,7 +539,7 @@ app.put('/api/insumos/:id/minimo', requiereAdmin, (req, res) => {
 
 app.get('/api/recetas', (req, res) => {
     const sql = `
-        SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida 
+        SELECT r.id_producto, p.nombre as nombre_producto, r.id_insumo, i.nombre as nombre_insumo, r.cantidad_requerida, r.variante
         FROM recetas r
         JOIN productos p ON r.id_producto = p.id_producto
         JOIN insumos i ON r.id_insumo = i.id_insumo
@@ -541,9 +552,9 @@ app.get('/api/recetas', (req, res) => {
 });
 
 app.post('/api/recetas', requiereAdmin, (req, res) => {
-    const { id_producto, id_insumo, cantidad_requerida } = req.body;
-    db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida) VALUES (?, ?, ?)', 
-    [id_producto, id_insumo, cantidad_requerida], (err) => {
+    const { id_producto, id_insumo, cantidad_requerida, variante } = req.body;
+    db.query('INSERT INTO recetas (id_producto, id_insumo, cantidad_requerida, variante) VALUES (?, ?, ?, ?)', 
+    [id_producto, id_insumo, cantidad_requerida, variante || null], (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });
@@ -551,7 +562,12 @@ app.post('/api/recetas', requiereAdmin, (req, res) => {
 
 app.delete('/api/recetas/:id_producto/:id_insumo', requiereAdmin, (req, res) => {
     const { id_producto, id_insumo } = req.params;
-    db.query('DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ?', [id_producto, id_insumo], (err) => {
+    const variante = req.query.variante || null;
+    const sql = variante
+        ? 'DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ? AND variante = ?'
+        : 'DELETE FROM recetas WHERE id_producto = ? AND id_insumo = ? AND variante IS NULL';
+    const params = variante ? [id_producto, id_insumo, variante] : [id_producto, id_insumo];
+    db.query(sql, params, (err) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ mensaje: 'Ok' });
     });

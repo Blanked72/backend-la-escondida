@@ -149,9 +149,11 @@ app.post('/api/ordenes', (req, res) => {
             let precioReal = info.precio;
 
             if (info.opciones && info.opciones.trim()) {
-                // Este producto tiene variantes: el cliente debió elegir una (viaja en "nota")
+                // Este producto tiene variantes: el cliente debió elegir una (viaja en "nota",
+                // que puede traer una nota extra pegada, ej. "Jamón - sin cebolla")
                 const variantes = parsearOpciones(info.opciones, info.precio);
-                const variante = variantes.find(v => v.nombre === item.nota);
+                const notaItem = item.nota || '';
+                const variante = variantes.find(v => notaItem === v.nombre || notaItem.startsWith(`${v.nombre} - `));
                 if (!variante || isNaN(variante.precio)) return null;
                 precioReal = variante.precio;
             }

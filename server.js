@@ -123,15 +123,33 @@ app.post('/api/ordenes', (req, res) => {
 
     const idsProductos = [...new Set(itemsCarrito.map(i => i.prodId))];
 
-    // Convierte "Nombre:Precio, Nombre, Nombre:Precio" en una lista de variantes.
+    // Convierte "Nombre:Precio, Nombre, Nombre:Precio" en una lista de variantes de UN solo grupo.
     // Si una variante no trae precio propio, usa el precio base del producto (ej. sabores de alitas).
-    function parsearOpciones(opcionesRaw, precioBase) {
+    function parsearOpcionesPlano(opcionesRaw, precioBase) {
         return opcionesRaw.split(',').map(entrada => {
             const partes = entrada.split(':');
             const nombre = partes[0].trim();
             const precio = partes.length > 1 ? parseFloat(partes[1]) : precioBase;
             return { nombre, precio };
         }).filter(v => v.nombre);
+    }
+
+    // Detecta si "opciones" define VARIOS grupos independientes (ej. combos con sabor de
+    // hamburguesa Y sabor de alitas), con formato "Etiqueta=opción, opción; Etiqueta=opción, opción".
+    // Si no usa "=", es el formato viejo de un solo grupo y esta función regresa null.
+    function parsearGruposOpciones(opcionesRaw) {
+        if (!opcionesRaw.includes('=')) return null;
+
+        return opcionesRaw.split(';').map(grupoRaw => {
+            const [etiqueta, listaRaw] = grupoRaw.split('=');
+            const opciones = (listaRaw || '').split(',').map(entrada => {
+                const partes = entrada.split(':');
+                const nombre = partes[0].trim();
+                const precioExtra = partes.length > 1 ? parseFloat(partes[1]) : 0;
+                return { nombre, precioExtra };
+            }).filter(o => o.nombre);
+            return { etiqueta: (etiqueta || '').trim(), opciones };
+        }).filter(g => g.opciones.length > 0);
     }
 
     // Ignoramos el precio enviado por el cliente: lo tomamos siempre de la BD
@@ -150,13 +168,34 @@ app.post('/api/ordenes', (req, res) => {
             let precioReal = info.precio;
 
             if (info.opciones && info.opciones.trim()) {
-                // Este producto tiene variantes: el cliente debió elegir una (viaja en "nota",
-                // que puede traer una nota extra pegada, ej. "Jamón - sin cebolla")
-                const variantes = parsearOpciones(info.opciones, info.precio);
+                const grupos = parsearGruposOpciones(info.opciones);
                 const notaItem = item.nota || '';
-                const variante = variantes.find(v => notaItem === v.nombre || notaItem.startsWith(`${v.nombre} - `));
-                if (!variante || isNaN(variante.precio)) return null;
-                precioReal = variante.precio;
+
+                if (grupos) {
+                    // Producto con VARIOS grupos: la nota trae cada elección unida con " + ",
+                    // ej. "Pollo + BBQ Picante" (puede traer nota extra al final: " - sin cebolla")
+                    const sinNotaExtra = notaItem.split(' - ')[0];
+                    const elecciones = sinNotaExtra.split(' + ').map(s => s.trim());
+
+                    if (elecciones.length !== grupos.length) return null;
+
+                    let extra = 0;
+                    let todoValido = true;
+                    grupos.forEach((grupo, i) => {
+                        const eleccion = grupo.opciones.find(o => o.nombre === elecciones[i]);
+                        if (!eleccion) { todoValido = false; return; }
+                        extra += eleccion.precioExtra || 0;
+                    });
+
+                    if (!todoValido) return null;
+                    precioReal = info.precio + extra;
+                } else {
+                    // Un solo grupo de variantes (ej. sabores de alitas, tortas con precio propio)
+                    const variantes = parsearOpcionesPlano(info.opciones, info.precio);
+                    const variante = variantes.find(v => notaItem === v.nombre || notaItem.startsWith(`${v.nombre} - `));
+                    if (!variante || isNaN(variante.precio)) return null;
+                    precioReal = variante.precio;
+                }
             }
 
             return [item.prodId, item.cant, precioReal, item.nombre, item.nota];
@@ -218,6 +257,10 @@ app.get('/api/cocina', (req, res) => {
                     r.variante IS NULL
                     OR d.nota_personalizada = r.variante
                     OR d.nota_personalizada LIKE CONCAT(r.variante, ' - %')
+                    OR d.nota_personalizada LIKE CONCAT(r.variante, ' + %')
+                    OR d.nota_personalizada LIKE CONCAT('% + ', r.variante)
+                    OR d.nota_personalizada LIKE CONCAT('% + ', r.variante, ' + %')
+                    OR d.nota_personalizada LIKE CONCAT('% + ', r.variante, ' - %')
                 )
             JOIN insumos i ON r.id_insumo = i.id_insumo
             WHERE d.id_orden IN (?)
@@ -330,6 +373,10 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
                         r.variante IS NULL
                         OR d.nota_personalizada = r.variante
                         OR d.nota_personalizada LIKE CONCAT(r.variante, ' - %')
+                        OR d.nota_personalizada LIKE CONCAT(r.variante, ' + %')
+                        OR d.nota_personalizada LIKE CONCAT('% + ', r.variante)
+                        OR d.nota_personalizada LIKE CONCAT('% + ', r.variante, ' + %')
+                        OR d.nota_personalizada LIKE CONCAT('% + ', r.variante, ' - %')
                     )
                 WHERE d.id_orden = ?
                 GROUP BY r.id_insumo

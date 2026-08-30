@@ -10,6 +10,7 @@ app.use(express.json());
 // Contraseña única para proteger las acciones de administración.
 // Se recomienda configurar ADMIN_PASSWORD como variable de entorno en Render.
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'laescondida2026';
+const COSTO_ENVIO_DOMICILIO = 20;
 
 function requiereAdmin(req, res, next) {
     const password = req.header('x-admin-password');
@@ -54,6 +55,7 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE ordenes ADD COLUMN nombre_cliente VARCHAR(100)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN telefono VARCHAR(20)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN direccion VARCHAR(255)", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN para_llevar TINYINT(1) DEFAULT 0", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN categoria VARCHAR(50)", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN opciones VARCHAR(500)", () => {});
     connection.query("ALTER TABLE recetas ADD COLUMN variante VARCHAR(100) DEFAULT NULL", () => {});
@@ -85,6 +87,7 @@ app.post('/api/ordenes', (req, res) => {
     const nombreCliente = req.body.nombre_cliente || null;
     const telefono = req.body.telefono || null;
     const direccion = req.body.direccion || null;
+    const paraLlevar = req.body.para_llevar ? 1 : 0;
 
     if (!Array.isArray(detallesEnviados) || detallesEnviados.length === 0) {
         return res.status(400).json({ error: 'El carrito está vacío' });
@@ -205,11 +208,12 @@ app.post('/api/ordenes', (req, res) => {
             return res.status(400).json({ error: 'Uno o más productos del carrito no existen, no están disponibles, o falta elegir una opción válida' });
         }
 
-        const totalFinal = valoresDetalles.reduce((suma, [, cant, precio]) => suma + (cant * precio), 0);
+        const totalProductos = valoresDetalles.reduce((suma, [, cant, precio]) => suma + (cant * precio), 0);
+        const totalFinal = tipoPedido === 'domicilio' ? totalProductos + COSTO_ENVIO_DOMICILIO : totalProductos;
         const mesaParaGuardar = tipoPedido === 'mesa' ? mesaFinal : 0;
 
-        const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado, tipo_pedido, nombre_cliente, telefono, direccion) VALUES (?, ?, 'Pendiente', ?, ?, ?, ?)";
-        db.query(sqlOrden, [mesaParaGuardar, totalFinal, tipoPedido, nombreCliente, telefono, direccion], (err, result) => {
+        const sqlOrden = "INSERT INTO ordenes (numero_mesa, total, estado, tipo_pedido, nombre_cliente, telefono, direccion, para_llevar) VALUES (?, ?, 'Pendiente', ?, ?, ?, ?, ?)";
+        db.query(sqlOrden, [mesaParaGuardar, totalFinal, tipoPedido, nombreCliente, telefono, direccion, paraLlevar], (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
 
             const id_orden = result.insertId;
@@ -233,7 +237,7 @@ app.get('/api/ordenes', (req, res) => {
 
 app.get('/api/cocina', (req, res) => {
     const sql = `
-        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion, o.fecha_creacion,
+        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion, o.fecha_creacion, o.para_llevar,
                IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.nota_personalizada AS nota, ${SQL_NUMERO_DIA}
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
@@ -316,7 +320,7 @@ app.put('/api/ordenes/:id/rechazar', (req, res) => {
 app.get('/api/mesero', (req, res) => {
     const sql = `
         SELECT o.id_orden, o.numero_mesa, o.estado, o.total, o.motivo_rechazo,
-               o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion,
+               o.tipo_pedido, o.nombre_cliente, o.telefono, o.direccion, o.para_llevar,
                IFNULL(d.notas, p.nombre) AS nombre_producto, d.cantidad, d.nota_personalizada AS nota, ${SQL_NUMERO_DIA}
         FROM ordenes o
         JOIN detalles_orden d ON o.id_orden = d.id_orden
@@ -451,7 +455,7 @@ app.get('/api/reportes/ventas/comandas', (req, res) => {
     }
 
     const sql = `
-        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.total,
+        SELECT o.id_orden, o.numero_mesa, o.tipo_pedido, o.nombre_cliente, o.total, o.para_llevar,
                DATE_FORMAT(CONVERT_TZ(o.fecha_creacion, '+00:00', '-06:00'), '%H:%i') AS hora,
                ${SQL_NUMERO_DIA}
         FROM ordenes o

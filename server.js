@@ -442,6 +442,84 @@ app.put('/api/ordenes/:id/cancelar-venta', requiereAdmin, (req, res) => {
     });
 });
 
+// Cancela UN SOLO producto dentro de una venta pagada (no toda la comanda):
+// resta su importe del total, regresa su insumo, y quita esa línea de la orden.
+// Identificamos la línea por (id_orden, id_producto, nota) ya que esa combinación es única.
+app.put('/api/ordenes/:id_orden/productos/:id_producto/cancelar', requiereAdmin, (req, res) => {
+    const { id_orden, id_producto } = req.params;
+    const nota = req.body.nota || null;
+
+    const filtroNota = nota ? 'd.nota_personalizada = ?' : 'd.nota_personalizada IS NULL';
+    const paramsFiltro = nota ? [id_orden, id_producto, nota] : [id_orden, id_producto];
+
+    const sqlBuscarLinea = `
+        SELECT d.cantidad, d.precio_unitario, o.estado
+        FROM detalles_orden d
+        JOIN ordenes o ON d.id_orden = o.id_orden
+        WHERE d.id_orden = ? AND d.id_producto = ? AND ${filtroNota}
+    `;
+
+    db.query(sqlBuscarLinea, paramsFiltro, (errBuscar, filas) => {
+        if (errBuscar) return res.status(500).json({ error: errBuscar.message });
+        if (filas.length === 0) return res.status(404).json({ error: 'No se encontró ese producto en esa orden.' });
+
+        const linea = filas[0];
+        if (linea.estado !== 'Pagada') {
+            return res.status(400).json({ error: 'Esa orden no está pagada, no se puede cancelar un producto individual.' });
+        }
+
+        const sqlRestaurarInsumo = `
+            UPDATE insumos i
+            JOIN (
+                SELECT r.id_insumo, SUM(r.cantidad_requerida * ?) AS total_a_regresar
+                FROM recetas r
+                WHERE r.id_producto = ?
+                  AND (
+                      r.variante IS NULL
+                      OR ? = r.variante
+                      OR ? LIKE CONCAT(r.variante, ' - %')
+                      OR ? LIKE CONCAT(r.variante, ' + %')
+                      OR ? LIKE CONCAT('% + ', r.variante)
+                      OR ? LIKE CONCAT('% + ', r.variante, ' + %')
+                      OR ? LIKE CONCAT('% + ', r.variante, ' - %')
+                  )
+                GROUP BY r.id_insumo
+            ) sub ON i.id_insumo = sub.id_insumo
+            SET i.cantidad_actual = i.cantidad_actual + sub.total_a_regresar
+        `;
+        const notaComparar = nota || '';
+        const paramsRestaurar = [linea.cantidad, id_producto, notaComparar, notaComparar, notaComparar, notaComparar, notaComparar, notaComparar];
+
+        db.query(sqlRestaurarInsumo, paramsRestaurar, (errRestaurar) => {
+            if (errRestaurar) return res.status(500).json({ error: "Falló al regresar el inventario: " + errRestaurar.message });
+
+            const importe = linea.cantidad * linea.precio_unitario;
+
+            db.query('UPDATE ordenes SET total = total - ? WHERE id_orden = ?', [importe, id_orden], (errTotal) => {
+                if (errTotal) return res.status(500).json({ error: errTotal.message });
+
+                const sqlBorrarLinea = `DELETE FROM detalles_orden WHERE id_orden = ? AND id_producto = ? AND ${filtroNota}`;
+                db.query(sqlBorrarLinea, paramsFiltro, (errBorrar) => {
+                    if (errBorrar) return res.status(500).json({ error: errBorrar.message });
+
+                    // Si ya no queda ningún producto en la orden, se cancela la venta completa
+                    db.query('SELECT COUNT(*) AS restantes FROM detalles_orden WHERE id_orden = ?', [id_orden], (errConteo, filasConteo) => {
+                        if (errConteo) return res.status(500).json({ error: errConteo.message });
+
+                        if (filasConteo[0].restantes === 0) {
+                            db.query("UPDATE ordenes SET estado = 'Cancelada' WHERE id_orden = ?", [id_orden], () => {
+                                res.json({ mensaje: 'Producto cancelado. Era el último de la orden, así que toda la venta quedó cancelada.' });
+                            });
+                        } else {
+                            res.json({ mensaje: 'Producto cancelado y su insumo fue regresado al inventario.' });
+                        }
+                    });
+                });
+            });
+        });
+    });
+});
+
 // Elimina permanentemente el registro de una venta del historial (no toca el inventario,
 // porque el insumo ya se consumió en la realidad; esto es solo limpieza del historial).
 app.delete('/api/ordenes/:id', requiereAdmin, (req, res) => {
@@ -737,7 +815,7 @@ app.get('/api/ordenes/:id/detalle', (req, res) => {
         if (ordenes.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
 
         const sqlItems = `
-            SELECT IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.precio_unitario, d.nota_personalizada AS nota
+            SELECT d.id_producto, IFNULL(d.notas, p.nombre) AS nombre, d.cantidad, d.precio_unitario, d.nota_personalizada AS nota
             FROM detalles_orden d
             JOIN productos p ON d.id_producto = p.id_producto
             WHERE d.id_orden = ?

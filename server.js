@@ -398,6 +398,77 @@ app.put('/api/ordenes/:id/pagar', (req, res) => {
     });
 });
 
+// Cancela una venta ya cobrada: la marca como Cancelada (deja de contar en reportes)
+// y REGRESA el insumo que se había descontado, respetando la variante elegida.
+app.put('/api/ordenes/:id/cancelar-venta', requiereAdmin, (req, res) => {
+    const { id } = req.params;
+
+    const sqlCancelar = "UPDATE ordenes SET estado = 'Cancelada' WHERE id_orden = ? AND estado = 'Pagada'";
+
+    db.query(sqlCancelar, [id], (errCancelar, resultCancelar) => {
+        if (errCancelar) return res.status(500).json({ error: errCancelar.message });
+
+        if (resultCancelar.affectedRows === 0) {
+            return res.status(400).json({ error: 'Esa orden no está pagada, no se puede cancelar.' });
+        }
+
+        const sqlRestaurarInventario = `
+            UPDATE insumos i
+            JOIN (
+                SELECT r.id_insumo, SUM(r.cantidad_requerida * d.cantidad) AS total_a_regresar
+                FROM detalles_orden d
+                JOIN recetas r ON d.id_producto = r.id_producto
+                    AND (
+                        r.variante IS NULL
+                        OR d.nota_personalizada = r.variante
+                        OR d.nota_personalizada LIKE CONCAT(r.variante, ' - %')
+                        OR d.nota_personalizada LIKE CONCAT(r.variante, ' + %')
+                        OR d.nota_personalizada LIKE CONCAT('% + ', r.variante)
+                        OR d.nota_personalizada LIKE CONCAT('% + ', r.variante, ' + %')
+                        OR d.nota_personalizada LIKE CONCAT('% + ', r.variante, ' - %')
+                    )
+                WHERE d.id_orden = ?
+                GROUP BY r.id_insumo
+            ) sub ON i.id_insumo = sub.id_insumo
+            SET i.cantidad_actual = i.cantidad_actual + sub.total_a_regresar
+        `;
+
+        db.query(sqlRestaurarInventario, [id], (errRestaurar) => {
+            if (errRestaurar) {
+                return res.status(500).json({ error: "La venta se canceló, pero falló al regresar el inventario: " + errRestaurar.message });
+            }
+            res.json({ mensaje: `Venta #${id} cancelada y el insumo fue regresado al inventario.` });
+        });
+    });
+});
+
+// Elimina permanentemente el registro de una venta del historial (no toca el inventario,
+// porque el insumo ya se consumió en la realidad; esto es solo limpieza del historial).
+app.delete('/api/ordenes/:id', requiereAdmin, (req, res) => {
+    const { id } = req.params;
+
+    db.query('DELETE FROM detalles_orden WHERE id_orden = ?', [id], (errDetalles) => {
+        if (errDetalles) return res.status(500).json({ error: errDetalles.message });
+
+        db.query('DELETE FROM ordenes WHERE id_orden = ?', [id], (errOrden) => {
+            if (errOrden) return res.status(500).json({ error: errOrden.message });
+            res.json({ mensaje: `Venta #${id} eliminada del historial.` });
+        });
+    });
+});
+
+// Borra TODO el historial de ventas pagadas (irreversible). No toca el inventario actual.
+app.delete('/api/reportes/ventas/historial', requiereAdmin, (req, res) => {
+    db.query("DELETE FROM detalles_orden WHERE id_orden IN (SELECT id_orden FROM ordenes WHERE estado = 'Pagada')", (errDetalles) => {
+        if (errDetalles) return res.status(500).json({ error: errDetalles.message });
+
+        db.query("DELETE FROM ordenes WHERE estado = 'Pagada'", (errOrdenes, resultado) => {
+            if (errOrdenes) return res.status(500).json({ error: errOrdenes.message });
+            res.json({ mensaje: `Se eliminaron ${resultado.affectedRows} venta(s) del historial.` });
+        });
+    });
+});
+
 // ==========================================
 // --- RUTAS DE REPORTES Y VENTAS POR DÍA ---
 // ==========================================
@@ -474,7 +545,7 @@ app.get('/api/reportes/ventas/comandas', (req, res) => {
 // ==========================================
 
 app.get('/api/productos', (req, res) => {
-    db.query('SELECT * FROM productos WHERE disponible = 1', (err, results) => {
+    db.query('SELECT * FROM productos WHERE disponible = 1 ORDER BY nombre ASC', (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
     });

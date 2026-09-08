@@ -56,6 +56,8 @@ db.getConnection((err, connection) => {
     connection.query("ALTER TABLE ordenes ADD COLUMN telefono VARCHAR(20)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN direccion VARCHAR(255)", () => {});
     connection.query("ALTER TABLE ordenes ADD COLUMN para_llevar TINYINT(1) DEFAULT 0", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN descuento DECIMAL(10,2) DEFAULT 0", () => {});
+    connection.query("ALTER TABLE ordenes ADD COLUMN motivo_descuento VARCHAR(255)", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN categoria VARCHAR(50)", () => {});
     connection.query("ALTER TABLE productos ADD COLUMN opciones VARCHAR(500)", () => {});
     connection.query("ALTER TABLE recetas ADD COLUMN variante VARCHAR(100) DEFAULT NULL", () => {});
@@ -355,6 +357,44 @@ app.put('/api/ordenes/:id/notificar-rechazo', (req, res) => {
 });
 
 // Cobro atómico con descuento de inventario unificado
+// Aplica un descuento en pesos a una orden todavía no pagada, con motivo obligatorio.
+app.put('/api/ordenes/:id/descuento', requiereAdmin, (req, res) => {
+    const { id } = req.params;
+    const monto = parseFloat(req.body.monto);
+    const motivo = (req.body.motivo || '').trim();
+
+    if (isNaN(monto) || monto <= 0) {
+        return res.status(400).json({ error: 'El monto del descuento debe ser mayor a 0' });
+    }
+    if (!motivo) {
+        return res.status(400).json({ error: 'El motivo del descuento es obligatorio' });
+    }
+
+    const sqlOrden = "SELECT total, descuento, estado FROM ordenes WHERE id_orden = ?";
+    db.query(sqlOrden, [id], (errOrden, filas) => {
+        if (errOrden) return res.status(500).json({ error: errOrden.message });
+        if (filas.length === 0) return res.status(404).json({ error: 'Orden no encontrada' });
+
+        const orden = filas[0];
+        if (orden.estado === 'Pagada') {
+            return res.status(400).json({ error: 'Esta orden ya está pagada. Para ajustar una venta ya cobrada, cancélala desde Reportes.' });
+        }
+
+        // El total ya guardado pudo incluir un descuento previo; lo quitamos antes de aplicar el nuevo
+        const totalSinDescuentoPrevio = parseFloat(orden.total) + parseFloat(orden.descuento || 0);
+        const nuevoTotal = Math.max(0, totalSinDescuentoPrevio - monto);
+
+        db.query(
+            'UPDATE ordenes SET total = ?, descuento = ?, motivo_descuento = ? WHERE id_orden = ?',
+            [nuevoTotal, monto, motivo, id],
+            (errUpdate) => {
+                if (errUpdate) return res.status(500).json({ error: errUpdate.message });
+                res.json({ mensaje: `Descuento de $${monto.toFixed(2)} aplicado.`, nuevoTotal });
+            }
+        );
+    });
+});
+
 app.put('/api/ordenes/:id/pagar', (req, res) => {
     const { id } = req.params;
 
@@ -450,6 +490,7 @@ app.put('/api/ordenes/:id_orden/productos/:id_producto/cancelar', requiereAdmin,
     const nota = req.body.nota || null;
 
     const filtroNota = nota ? 'd.nota_personalizada = ?' : 'd.nota_personalizada IS NULL';
+    const filtroNotaSinAlias = nota ? 'nota_personalizada = ?' : 'nota_personalizada IS NULL';
     const paramsFiltro = nota ? [id_orden, id_producto, nota] : [id_orden, id_producto];
 
     const sqlBuscarLinea = `
@@ -498,7 +539,7 @@ app.put('/api/ordenes/:id_orden/productos/:id_producto/cancelar', requiereAdmin,
             db.query('UPDATE ordenes SET total = total - ? WHERE id_orden = ?', [importe, id_orden], (errTotal) => {
                 if (errTotal) return res.status(500).json({ error: errTotal.message });
 
-                const sqlBorrarLinea = `DELETE FROM detalles_orden WHERE id_orden = ? AND id_producto = ? AND ${filtroNota}`;
+                const sqlBorrarLinea = `DELETE FROM detalles_orden WHERE id_orden = ? AND id_producto = ? AND ${filtroNotaSinAlias}`;
                 db.query(sqlBorrarLinea, paramsFiltro, (errBorrar) => {
                     if (errBorrar) return res.status(500).json({ error: errBorrar.message });
 
